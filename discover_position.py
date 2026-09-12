@@ -116,7 +116,13 @@ def main():
         logs = transfer_event.get_logs(fromBlock=from_block, toBlock=latest_block, argument_filters={"to": sickle_address})
     except Exception as e:
         print(f"FAILED to get logs: {e}")
-        print("This RPC provider may not support the block range or filter used — may need chunked queries.")
+        # Print the actual provider response body if we have one — a bare
+        # "400 Bad Request" doesn't say WHY, and guessing at a chunk size
+        # blindly wastes RPC calls. Alchemy's error body usually states
+        # the exact allowed range.
+        resp = getattr(e, "response", None)
+        if resp is not None:
+            print(f"Provider response body: {resp.text}")
         sys.exit(1)
 
     candidate_ids = sorted(set(log["args"]["tokenId"] for log in logs))
