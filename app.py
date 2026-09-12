@@ -87,6 +87,52 @@ def get_token_prices_usd(addresses: list) -> dict:
         return {}
 
 
+# ── Pool trading volume (GeckoTerminal OHLCV, by pool address) ─────────────
+_GECKOTERMINAL_OHLCV_URL = "https://api.geckoterminal.com/api/v2/networks/base/pools/{}/ohlcv/day"
+_POOL_VOLUME_CACHE = {}
+_POOL_VOLUME_CACHE_TTL = 1800
+_VOLUME_RANGE_DAYS = {"7d": 7, "30d": 30, "60d": 60, "90d": 90, "180d": 180}
+
+
+def get_pool_volume_usd(pool_address: str, days: int) -> list:
+    cache_key = f"{pool_address.lower()}:{days}"
+    cached = _POOL_VOLUME_CACHE.get(cache_key)
+    if cached and time.time() - cached["fetched_at"] < _POOL_VOLUME_CACHE_TTL:
+        return cached["candles"]
+    url = _GECKOTERMINAL_OHLCV_URL.format(pool_address)
+    resp = requests.get(url, params={"aggregate": 1, "limit": days, "currency": "usd"}, timeout=10)
+    resp.raise_for_status()
+    data = resp.json()
+    ohlcv_list = data.get("data", {}).get("attributes", {}).get("ohlcv_list", [])
+    candles = sorted(
+        ({"ts": row[0], "volume_usd": row[5]} for row in ohlcv_list),
+        key=lambda c: c["ts"],
+    )
+    _POOL_VOLUME_CACHE[cache_key] = {"candles": candles, "fetched_at": time.time()}
+    return candles
+
+
+# ── History storage (portfolio-level and per-position) ─────────────────────
+def _history_file_path(name: str) -> str:
+    return os.path.join(HISTORY_DIR, f"history_{name}.json")
+
+
+def _closed_positions_file_path() -> str:
+    return os.path.join(HISTORY_DIR, "closed_positions.json")
+
+
+def append_history_snapshot(name: str, snapshot: dict):
+    path = _history_file_path(name)
+    with _history_lock:
+        history = _read_json_locked(path, [])
+        history.append(snapshot)
+        _write_json_locked(path, history)
+
+
+def load_history(name: str) -> list:
+    return _read_json_locked(_history_file_path(name), [])
+
+
 # ── Persistent baseline tracking (Railway volume) ───────────────────────────
 # Needed for P&L (no cost-basis data exists on-chain for a raw Uniswap V3
 # NFT — same "since we started tracking" approach as snuggle-tracker) and
@@ -149,6 +195,22 @@ def capture_snapshot():
     now = time.time()
     with _history_lock:
         known = _read_json_locked(_known_positions_file_path(), {})
+        current_ids = {str(p["token_id"]) for p in positions}
+        closed_now = [tid for tid in known if tid not in current_ids]
+
+        if closed_now:
+            closed_list = _read_json_locked(_closed_positions_file_path(), [])
+            for tid in closed_now:
+                last_known = known[tid]
+                closed_list.append({
+                    "token_id": int(tid),
+                    "pool": last_known.get("pool"),
+                    "closed_at": now,
+                    "last_value_usd": last_known.get("last_value_usd"),
+                })
+                _append_closed_marker(tid, now)
+            _write_json_locked(_closed_positions_file_path(), closed_list)
+
         for p in positions:
             tid = str(p["token_id"])
             prior = known.get(tid, {})
@@ -160,12 +222,43 @@ def capture_snapshot():
                 baseline_fees_usd = p["uncollected_fees_usd"] or 0.0
                 baseline_ts = now
             known[tid] = {
+                "pool": f"{p['token0']['symbol']}/{p['token1']['symbol']}",
+                "pool_address": p["pool_address"],
                 "baseline_value_usd": baseline_value_usd,
                 "baseline_fees_usd": baseline_fees_usd,
                 "baseline_ts": baseline_ts,
+                "last_value_usd": p["position_value_usd"],
                 "last_seen": now,
             }
         _write_json_locked(_known_positions_file_path(), known)
+
+    # Portfolio-level history.
+    portfolio = compute_portfolio_summary(positions)
+    append_history_snapshot("portfolio", {
+        "ts": now,
+        "total_value_usd": portfolio["total_value_usd"],
+        "total_fees_usd": portfolio["total_fees_usd"],
+        "position_count": portfolio["position_count"],
+        "out_of_range_count": portfolio["out_of_range_count"],
+    })
+
+    # Per-position history.
+    for p in positions:
+        append_history_snapshot(f"pos_{p['token_id']}", {
+            "ts": now,
+            "value_usd": p["position_value_usd"],
+            "fees_usd": p["uncollected_fees_usd"],
+            "in_range": p["in_range"],
+        })
+
+
+def _append_closed_marker(token_id: str, ts: float):
+    """Final marker in a closed position's own history file, so its
+    chart visibly shows where it ends. Caller already holds _history_lock."""
+    path = _history_file_path(f"pos_{token_id}")
+    history = _read_json_locked(path, [])
+    history.append({"ts": ts, "token_id": int(token_id), "closed": True})
+    _write_json_locked(path, history)
 
 
 def _snapshot_loop():
@@ -175,10 +268,6 @@ def _snapshot_loop():
         except Exception as e:
             app.logger.error("Snapshot loop error: %s", e)
         time.sleep(SNAPSHOT_INTERVAL)
-
-
-_snapshot_thread = threading.Thread(target=_snapshot_loop, daemon=True)
-_snapshot_thread.start()
 
 
 def enrich_with_usd(positions: list) -> list:
@@ -343,6 +432,66 @@ def api_positions():
 @app.route("/api/health")
 def health():
     return jsonify({"ok": True, "rpc_configured": bool(ALCHEMY_BASE)})
+
+
+_RANGE_TO_SECONDS = {"7d": 7 * 86400, "30d": 30 * 86400, "90d": 90 * 86400, "all": None}
+
+
+@app.route("/api/history")
+def api_history():
+    range_key = request.args.get("range", "30d")
+    if range_key not in _RANGE_TO_SECONDS:
+        return jsonify({"error": "range must be one of: 7d, 30d, 90d, all"}), 400
+    history = load_history("portfolio")
+    window_seconds = _RANGE_TO_SECONDS[range_key]
+    if window_seconds is not None:
+        cutoff = time.time() - window_seconds
+        history = [s for s in history if s["ts"] >= cutoff]
+    return jsonify({"snapshots": history, "range": range_key})
+
+
+@app.route("/api/history/<int:token_id>")
+def api_position_history(token_id):
+    range_key = request.args.get("range", "30d")
+    if range_key not in _RANGE_TO_SECONDS:
+        return jsonify({"error": "range must be one of: 7d, 30d, 90d, all"}), 400
+    history = load_history(f"pos_{token_id}")
+    window_seconds = _RANGE_TO_SECONDS[range_key]
+    if window_seconds is not None:
+        cutoff = time.time() - window_seconds
+        history = [s for s in history if s["ts"] >= cutoff]
+    return jsonify({"snapshots": history, "range": range_key, "token_id": token_id})
+
+
+@app.route("/api/closed")
+def api_closed_positions():
+    closed = _read_json_locked(_closed_positions_file_path(), [])
+    closed_sorted = sorted(closed, key=lambda c: c["closed_at"], reverse=True)
+    return jsonify({"closed": closed_sorted})
+
+
+@app.route("/api/pool-volume/<int:token_id>")
+def api_pool_volume(token_id):
+    range_key = request.args.get("range", "30d")
+    if range_key not in _VOLUME_RANGE_DAYS:
+        return jsonify({"error": "range must be one of: 7d, 30d, 60d, 90d, 180d"}), 400
+
+    known = _read_json_locked(_known_positions_file_path(), {})
+    entry = known.get(str(token_id))
+    pool_address = entry.get("pool_address") if entry else None
+    if not pool_address:
+        return jsonify({"error": "Pool address not yet known for this position — "
+                                  "check back after the next snapshot cycle."}), 404
+    try:
+        candles = get_pool_volume_usd(pool_address, _VOLUME_RANGE_DAYS[range_key])
+    except Exception as e:
+        app.logger.warning("Pool volume fetch failed for %s: %s", pool_address, e)
+        return jsonify({"error": "Volume data unavailable right now"}), 502
+    return jsonify({"candles": candles, "range": range_key, "token_id": token_id})
+
+
+_snapshot_thread = threading.Thread(target=_snapshot_loop, daemon=True)
+_snapshot_thread.start()
 
 
 if __name__ == "__main__":
