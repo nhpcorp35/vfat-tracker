@@ -100,32 +100,42 @@ def main():
 
     npm = w3.eth.contract(address=UNISWAP_V3_NPM, abi=NPM_ABI)
 
-    # Scan Transfer events where to == sickle_address, from the NPM's
-    # genesis block on Base forward. Base Uniswap V3 NPM was deployed
-    # well after Base mainnet launch, but to be safe and avoid an
-    # unbounded/expensive full-chain scan, start from a recent-ish
-    # block and widen only if nothing is found — printed clearly either
-    # way so a bad assumption here is visible, not silent.
-    latest_block = w3.eth.block_number
-    lookback_blocks = 20_000_000  # generously covers Base's history at ~2s/block
-    from_block = max(0, latest_block - lookback_blocks)
+    # Raw eth_getLogs is a dead end here: Alchemy's free tier caps the
+    # block range at 10 blocks per call (confirmed via the provider's
+    # own error message), and scanning Base's ~20M-block history in
+    # chunks of 10 would take ~2M calls. Use Alchemy's indexed
+    # alchemy_getAssetTransfers API instead — built for exactly this
+    # "find all transfers to this address" query, no block-range limit,
+    # available on the free tier.
+    print(f"Querying alchemy_getAssetTransfers for ERC721 transfers to {sickle_address} ...")
+    candidate_ids = set()
+    page_key = None
+    while True:
+        params = {
+            "fromBlock": "0x0",
+            "toBlock": "latest",
+            "toAddress": sickle_address,
+            "contractAddresses": [UNISWAP_V3_NPM],
+            "category": ["erc721"],
+            "withMetadata": False,
+            "excludeZeroValue": False,
+        }
+        if page_key:
+            params["pageKey"] = page_key
+        resp = w3.provider.make_request("alchemy_getAssetTransfers", [params])
+        if "error" in resp:
+            print(f"FAILED: alchemy_getAssetTransfers returned an error: {resp['error']}")
+            sys.exit(1)
+        transfers = resp["result"]["transfers"]
+        for t in transfers:
+            token_id_hex = t.get("erc721TokenId")
+            if token_id_hex:
+                candidate_ids.add(int(token_id_hex, 16))
+        page_key = resp["result"].get("pageKey")
+        if not page_key:
+            break
 
-    print(f"Scanning Transfer events on NPM to={sickle_address} from block {from_block} to {latest_block} ...")
-    transfer_event = npm.events.Transfer()
-    try:
-        logs = transfer_event.get_logs(fromBlock=from_block, toBlock=latest_block, argument_filters={"to": sickle_address})
-    except Exception as e:
-        print(f"FAILED to get logs: {e}")
-        # Print the actual provider response body if we have one — a bare
-        # "400 Bad Request" doesn't say WHY, and guessing at a chunk size
-        # blindly wastes RPC calls. Alchemy's error body usually states
-        # the exact allowed range.
-        resp = getattr(e, "response", None)
-        if resp is not None:
-            print(f"Provider response body: {resp.text}")
-        sys.exit(1)
-
-    candidate_ids = sorted(set(log["args"]["tokenId"] for log in logs))
+    candidate_ids = sorted(candidate_ids)
     print(f"Found {len(candidate_ids)} candidate tokenId(s) ever transferred to this Sickle: {candidate_ids}")
 
     if not candidate_ids:
