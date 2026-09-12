@@ -11,6 +11,9 @@ import os
 import time
 import base64
 import logging
+import threading
+import json
+import fcntl
 
 import requests
 from flask import Flask, jsonify, request, Response
@@ -84,6 +87,100 @@ def get_token_prices_usd(addresses: list) -> dict:
         return {}
 
 
+# ── Persistent baseline tracking (Railway volume) ───────────────────────────
+# Needed for P&L (no cost-basis data exists on-chain for a raw Uniswap V3
+# NFT — same "since we started tracking" approach as snuggle-tracker) and
+# for a fees-earned-over-time APR (the NPM has no cumulative-fees counter;
+# tokensOwed resets to 0 on every collect(), so "lifetime fees" isn't
+# available the way it was for Snuggle's vault struct).
+HISTORY_DIR = os.environ.get("HISTORY_DIR", "/data")
+_history_lock = threading.Lock()
+SNAPSHOT_INTERVAL = 3600  # 1 hour
+
+
+def _known_positions_file_path() -> str:
+    return os.path.join(HISTORY_DIR, "known_positions.json")
+
+
+def _read_json_locked(path: str, default):
+    try:
+        with open(path, "r") as f:
+            fcntl.flock(f, fcntl.LOCK_SH)
+            try:
+                return json.load(f)
+            finally:
+                fcntl.flock(f, fcntl.LOCK_UN)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return default
+
+
+def _write_json_locked(path: str, data):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        try:
+            json.dump(data, f)
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
+
+
+def capture_snapshot():
+    """Runs hourly. Records a baseline (value + uncollected-fees, both
+    USD) for any token_id that doesn't have one yet — self-healing: a
+    brand-new position AND a position that predates this feature both
+    just get baselined at whatever their state is on the next cycle
+    that sees them. Never overwrites an existing baseline."""
+    if not DEFAULT_WALLET:
+        return
+    w3 = get_w3()
+    if not w3:
+        return
+    try:
+        sickle_address = va.resolve_sickle(w3, DEFAULT_WALLET)
+        if sickle_address is None:
+            return
+        token_ids = va.discover_current_token_ids(w3, sickle_address)
+        positions = [va.fetch_position(w3, tid) for tid in token_ids]
+        positions = enrich_with_usd(positions)
+    except Exception as e:
+        app.logger.warning("Snapshot capture failed: %s", e)
+        return
+
+    now = time.time()
+    with _history_lock:
+        known = _read_json_locked(_known_positions_file_path(), {})
+        for p in positions:
+            tid = str(p["token_id"])
+            prior = known.get(tid, {})
+            baseline_value_usd = prior.get("baseline_value_usd")
+            baseline_fees_usd = prior.get("baseline_fees_usd")
+            baseline_ts = prior.get("baseline_ts")
+            if baseline_value_usd is None and p["position_value_usd"] is not None:
+                baseline_value_usd = p["position_value_usd"]
+                baseline_fees_usd = p["uncollected_fees_usd"] or 0.0
+                baseline_ts = now
+            known[tid] = {
+                "baseline_value_usd": baseline_value_usd,
+                "baseline_fees_usd": baseline_fees_usd,
+                "baseline_ts": baseline_ts,
+                "last_seen": now,
+            }
+        _write_json_locked(_known_positions_file_path(), known)
+
+
+def _snapshot_loop():
+    while True:
+        try:
+            capture_snapshot()
+        except Exception as e:
+            app.logger.error("Snapshot loop error: %s", e)
+        time.sleep(SNAPSHOT_INTERVAL)
+
+
+_snapshot_thread = threading.Thread(target=_snapshot_loop, daemon=True)
+_snapshot_thread.start()
+
+
 def enrich_with_usd(positions: list) -> list:
     """Adds USD values and range-bar-support fields. Fields are None
     where price data wasn't available — never fabricated."""
@@ -127,12 +224,65 @@ def enrich_with_usd(positions: list) -> list:
 def compute_portfolio_summary(positions: list) -> dict:
     total_value_usd = sum(p["position_value_usd"] for p in positions if p["position_value_usd"] is not None)
     total_fees_usd = sum(p["uncollected_fees_usd"] for p in positions if p["uncollected_fees_usd"] is not None)
+    pnl_positions = [p for p in positions if p.get("pnl_usd") is not None]
+    total_pnl_usd = sum(p["pnl_usd"] for p in pnl_positions) if pnl_positions else None
     return {
         "total_value_usd": total_value_usd if total_value_usd > 0 else None,
         "total_fees_usd": total_fees_usd if total_fees_usd > 0 else None,
+        "total_pnl_usd": total_pnl_usd,
         "position_count": len(positions),
         "out_of_range_count": sum(1 for p in positions if not p["in_range"]),
     }
+
+
+def attach_pnl_and_apr(positions: list) -> list:
+    """Read-only — the background snapshot loop is the sole writer of
+    known_positions.json, avoiding two code paths racing on the same
+    file. A position with no recorded baseline yet (brand new, next
+    snapshot cycle hasn't run) gets None, never a fabricated number.
+
+    APR here is "fees earned since we started tracking, annualized" —
+    NOT true lifetime APR (no cumulative-fee counter exists on-chain
+    for a raw Uniswap V3 NFT the way Snuggle's vault provided one).
+    Forced to 0 whenever the position is currently out of range,
+    regardless of what it earned earlier in the tracked window, since
+    an out-of-range position earns zero trading fees right now — a
+    stale nonzero APR from before it left the range would be
+    misleading about its current state.
+
+    One known limitation: if fees were manually collected during the
+    tracked window, uncollected_fees_usd drops and this would compute
+    a negative "fees earned" — clamped to 0 rather than shown negative,
+    since a negative APR from a collect() is more confusing than
+    informative. That does mean a just-collected position under-reports
+    its true earnings for that window."""
+    known = _read_json_locked(_known_positions_file_path(), {})
+    now = time.time()
+    for p in positions:
+        entry = known.get(str(p["token_id"]))
+        baseline_value = entry.get("baseline_value_usd") if entry else None
+        baseline_fees = entry.get("baseline_fees_usd") if entry else None
+        baseline_ts = entry.get("baseline_ts") if entry else None
+
+        pnl_usd = pnl_pct = apr_pct = None
+        if baseline_value is not None and baseline_value > 0 and p["position_value_usd"] is not None:
+            pnl_usd = p["position_value_usd"] - baseline_value
+            pnl_pct = pnl_usd / baseline_value * 100.0
+
+        if (not p["in_range"]):
+            apr_pct = 0.0
+        elif (baseline_fees is not None and baseline_ts is not None
+                and p["uncollected_fees_usd"] is not None and p["position_value_usd"]):
+            days_tracked = (now - baseline_ts) / 86400.0
+            fees_earned = max(0.0, p["uncollected_fees_usd"] - baseline_fees)
+            if days_tracked > 0.5 and p["position_value_usd"] > 0:
+                apr_pct = fees_earned / p["position_value_usd"] * (365.0 / days_tracked) * 100.0
+
+        p["baseline_value_usd"] = baseline_value
+        p["pnl_usd"] = pnl_usd
+        p["pnl_pct"] = pnl_pct
+        p["apr_pct"] = apr_pct
+    return positions
 
 
 @app.route("/")
@@ -169,6 +319,7 @@ def api_positions():
         token_ids = va.discover_current_token_ids(w3, sickle_address)
         positions = [va.fetch_position(w3, tid) for tid in token_ids]
         positions = enrich_with_usd(positions)
+        positions = attach_pnl_and_apr(positions)
     except Exception as e:
         app.logger.error("Position fetch failed for %s: %s", wallet, e)
         stale = _stale_cache.get(cache_key)

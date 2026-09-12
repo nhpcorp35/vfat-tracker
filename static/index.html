@@ -56,6 +56,9 @@
   .fees-label { color: var(--muted); }
   .fees-value { color: #20d2d0; }
   .empty-state { text-align: center; padding: 60px 0; color: var(--muted); font-size: 13px; }
+  .pnl-pos { color: var(--green); }
+  .pnl-neg { color: var(--red); }
+  .pnl-sub { font-family: var(--mono); font-size: 12px; margin-top: 2px; }
   a { color: var(--blue); }
 </style>
 </head>
@@ -93,6 +96,14 @@ function fmtPrice(n) {
   if (n === null || n === undefined) return '—';
   const decimals = n >= 100 ? 0 : n >= 1 ? 2 : 6;
   return '$' + Number(n).toLocaleString(undefined, { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
+}
+function fmtPnl(usd, pct) {
+  if (usd === null || usd === undefined) return null;
+  const cls = usd >= 0 ? 'pnl-pos' : 'pnl-neg';
+  const sign = usd >= 0 ? '+' : '-';
+  const usdStr = sign + '$' + Math.abs(usd).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const pctStr = (pct !== null && pct !== undefined) ? ` (${sign}${Math.abs(pct).toFixed(2)}%)` : '';
+  return { cls, text: usdStr + pctStr };
 }
 function feeTierLabel(feeRaw) {
   return (feeRaw / 10000).toFixed(2) + '%';
@@ -151,11 +162,14 @@ function renderPortfolio(portfolio, sickleAddress, note) {
   const oorNote = portfolio.out_of_range_count > 0
     ? `<div class="portfolio-stat-value warn">${portfolio.out_of_range_count} / ${portfolio.position_count}</div>`
     : `<div class="portfolio-stat-value">0 / ${portfolio.position_count}</div>`;
+  const pnl = fmtPnl(portfolio.total_pnl_usd, null);
+  const pnlBlock = pnl ? `<div class="portfolio-stat-value ${pnl.cls}">${pnl.text}</div>` : `<div class="portfolio-stat-value" style="color:var(--muted);">—</div>`;
 
   el.innerHTML = `
     <div class="portfolio-bar">
       <div><div class="portfolio-stat-label">Total Value</div><div class="portfolio-stat-value accent">${totalValue}</div></div>
       <div><div class="portfolio-stat-label">Uncollected Fees</div><div class="portfolio-stat-value">${totalFees}</div></div>
+      <div><div class="portfolio-stat-label">P&L (since tracked)</div>${pnlBlock}</div>
       <div><div class="portfolio-stat-label">Out of Range</div>${oorNote}</div>
       <div><div class="portfolio-stat-label">Sickle</div><div class="portfolio-stat-value" style="font-size:12px;">${sickleAddress.slice(0,6)}...${sickleAddress.slice(-4)}</div></div>
     </div>
@@ -174,6 +188,9 @@ function renderPositions(positions) {
     const holdingsLine = `${fmtNum(p.amount0, 6)} ${sym0} + ${fmtNum(p.amount1, 6)} ${sym1}`;
     const usdValue = fmtUsd(p.position_value_usd);
     const feesUsd = fmtUsd(p.uncollected_fees_usd);
+    const pnl = fmtPnl(p.pnl_usd, p.pnl_pct);
+    const pnlLine = pnl ? `<div class="pnl-sub ${pnl.cls}">${pnl.text}</div>` : '';
+    const aprLine = (p.apr_pct === null || p.apr_pct === undefined) ? '—' : fmtPct(p.apr_pct, 1);
 
     return `
       <div class="position-card ${rangeClass}">
@@ -187,11 +204,16 @@ function renderPositions(positions) {
             <div class="stat-label">Current Holdings</div>
             <div class="stat-value">${holdingsLine}</div>
             ${usdValue ? `<div class="stat-value" style="margin-top:2px;">${usdValue}</div>` : ''}
+            ${pnlLine}
           </div>
           <div>
             <div class="stat-label">Range Width</div>
             <div class="stat-value">${fmtPct(p.range_width_pct, 1)}</div>
             <div class="stat-value dim" style="margin-top:2px;">[${p.tick_lower}, ${p.tick_upper}]</div>
+          </div>
+          <div>
+            <div class="stat-label">APR (since tracked)</div>
+            <div class="stat-value">${aprLine}</div>
           </div>
         </div>
         <div class="fees-row">
