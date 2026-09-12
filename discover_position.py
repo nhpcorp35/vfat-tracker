@@ -144,9 +144,20 @@ def main():
         sys.exit(1)
 
     # Confirm CURRENT ownership — a past transfer-to doesn't mean still-held.
+    # A candidate can also have been fully withdrawn and burned (normal
+    # lifecycle for a closed position) — ownerOf() reverts for a burned
+    # token rather than returning an address, so that's a distinct,
+    # expected outcome, not an error to crash on.
     current_ids = []
     for tid in candidate_ids:
-        owner = npm.functions.ownerOf(tid).call()
+        try:
+            owner = npm.functions.ownerOf(tid).call()
+        except Exception as e:
+            if "nonexistent token" in str(e):
+                print(f"  tokenId {tid}: burned (fully withdrawn/closed) — skipping")
+                continue
+            print(f"  tokenId {tid}: unexpected error checking ownership: {e}")
+            continue
         print(f"  tokenId {tid}: current owner = {owner} {'(MATCH)' if owner == sickle_address else '(moved on)'}")
         if owner == sickle_address:
             current_ids.append(tid)
