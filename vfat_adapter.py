@@ -32,7 +32,20 @@ from web3 import Web3
 
 UNISWAP_V3_NPM = Web3.to_checksum_address("0x03a520b32C04BF3bEEf7BEb72E919cf822Ed34f1")
 UNISWAP_V3_FACTORY = Web3.to_checksum_address("0x33128a8fC17869897dcE68Ed026d694621f6FDfD")
+PANCAKE_V3_NPM = Web3.to_checksum_address("0x46A15B0b27311cedF172AB29E4f4766fbE7F4364")
+PANCAKE_V3_FACTORY = Web3.to_checksum_address("0x0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865")
 SICKLE_FACTORY = Web3.to_checksum_address("0x71D234A3e1dfC161cc1d081E6496e76627baAc31")
+
+# Both protocols confirmed empirically (not assumed) to hold their NFT
+# directly in the Sickle — no gauge/farm staking layer, unlike
+# Aerodrome's Slipstream positions (confirmed staked via a real
+# harvestFor transaction) or, in principle, a Pancake position staked
+# in MasterChefV3 for CAKE (checked directly: this wallet's Pancake
+# position has zero MasterChefV3 balance, all balance sits on the NPM).
+PROTOCOLS = {
+    "uniswap": {"npm": UNISWAP_V3_NPM, "factory": UNISWAP_V3_FACTORY, "label": "Uniswap V3"},
+    "pancake": {"npm": PANCAKE_V3_NPM, "factory": PANCAKE_V3_FACTORY, "label": "PancakeSwap V3"},
+}
 
 Q128 = 2 ** 128
 
@@ -165,12 +178,13 @@ def resolve_sickle(w3, wallet: str):
     return addr
 
 
-def discover_current_token_ids(w3, sickle_address: str) -> list:
-    """Finds tokenIds currently held by the Sickle on the Uniswap V3 NPM,
-    via Alchemy's indexed transfer API (NOT raw eth_getLogs — see module
-    docstring). Confirms current ownership per candidate; a burned
-    (fully withdrawn) position is skipped, not an error."""
-    npm = w3.eth.contract(address=UNISWAP_V3_NPM, abi=NPM_ABI)
+def discover_current_token_ids(w3, sickle_address: str, npm_address: str = UNISWAP_V3_NPM) -> list:
+    """Finds tokenIds currently held by the Sickle on the given NFT
+    position manager, via Alchemy's indexed transfer API (NOT raw
+    eth_getLogs — see module docstring). Confirms current ownership per
+    candidate; a burned (fully withdrawn) position is skipped, not an
+    error."""
+    npm = w3.eth.contract(address=npm_address, abi=NPM_ABI)
 
     candidate_ids = set()
     page_key = None
@@ -179,7 +193,7 @@ def discover_current_token_ids(w3, sickle_address: str) -> list:
             "fromBlock": "0x0",
             "toBlock": "latest",
             "toAddress": sickle_address,
-            "contractAddresses": [UNISWAP_V3_NPM],
+            "contractAddresses": [npm_address],
             "category": ["erc721"],
             "withMetadata": False,
             "excludeZeroValue": False,
@@ -255,10 +269,12 @@ def _live_fee_growth_inside(current_tick, tick_lower, tick_upper,
     return inside0, inside1
 
 
-def fetch_position(w3, token_id: int) -> dict:
-    """Full position data for one Uniswap V3 NFT, including LIVE
-    uncollected fees (not just tokensOwed-as-of-last-touch)."""
-    npm = w3.eth.contract(address=UNISWAP_V3_NPM, abi=NPM_ABI)
+def fetch_position(w3, token_id: int, npm_address: str = UNISWAP_V3_NPM, factory_address: str = UNISWAP_V3_FACTORY) -> dict:
+    """Full position data for one Uniswap-V3-shaped NFT (works for any
+    fork sharing the same NonfungiblePositionManager/Pool interface —
+    confirmed for PancakeSwap V3, which is a close fork), including
+    LIVE uncollected fees (not just tokensOwed-as-of-last-touch)."""
+    npm = w3.eth.contract(address=npm_address, abi=NPM_ABI)
     pos = npm.functions.positions(token_id).call()
     (nonce, operator, token0, token1, fee, tick_lower, tick_upper,
      liquidity, fee_growth_inside0_last, fee_growth_inside1_last,
@@ -267,7 +283,7 @@ def fetch_position(w3, token_id: int) -> dict:
     sym0, dec0 = _token_meta(w3, token0)
     sym1, dec1 = _token_meta(w3, token1)
 
-    factory = w3.eth.contract(address=UNISWAP_V3_FACTORY, abi=FACTORY_ABI)
+    factory = w3.eth.contract(address=factory_address, abi=FACTORY_ABI)
     pool_address = factory.functions.getPool(token0, token1, fee).call()
     pool = w3.eth.contract(address=Web3.to_checksum_address(pool_address), abi=POOL_ABI)
 

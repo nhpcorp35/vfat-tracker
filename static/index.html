@@ -32,6 +32,7 @@
   .pos-title { font-size: 16px; font-weight: 600; }
   .pos-title .fee-tag { font-size: 11px; color: var(--muted); background: var(--border); padding: 2px 8px; border-radius: 4px; margin-left: 8px; }
   .pos-title .id-tag { font-size: 11px; color: var(--muted); margin-left: 6px; }
+  .pos-title .protocol-tag { font-size: 10px; color: var(--blue); background: rgba(74,158,255,0.12); padding: 2px 8px; border-radius: 4px; margin-left: 8px; text-transform: uppercase; letter-spacing: 0.03em; }
   .range-badge { font-family: var(--mono); font-size: 11px; font-weight: 600; padding: 4px 10px; border-radius: 6px; letter-spacing: 0.05em; }
   .range-badge.in { background: var(--green-dim); color: var(--green); }
   .range-badge.out { background: var(--red-dim); color: var(--red); }
@@ -201,11 +202,12 @@ function renderPositions(positions) {
     const pnl = fmtPnl(p.pnl_usd, p.pnl_pct);
     const pnlLine = pnl ? `<div class="pnl-sub ${pnl.cls}">${pnl.text}</div>` : '';
     const aprLine = (p.apr_pct === null || p.apr_pct === undefined) ? '—' : fmtPct(p.apr_pct, 1);
+    const posKey = `${p.protocol}-${p.token_id}`;
 
     return `
       <div class="position-card ${rangeClass}">
         <div class="pos-header">
-          <div class="pos-title">${sym0} / ${sym1}<span class="fee-tag">${feeTierLabel(p.fee_tier)}</span><span class="id-tag">#${p.token_id}</span></div>
+          <div class="pos-title">${sym0} / ${sym1}<span class="fee-tag">${feeTierLabel(p.fee_tier)}</span><span class="id-tag">#${p.token_id}</span><span class="protocol-tag">${p.protocol_label}</span></div>
           <span class="range-badge ${badgeClass}">${badgeText}</span>
         </div>
         ${renderRangeBar(p)}
@@ -231,27 +233,27 @@ function renderPositions(positions) {
           <span class="fees-value">${fmtNum(p.uncollected_fees0, 6)} ${sym0} / ${fmtNum(p.uncollected_fees1, 6)} ${sym1}${feesUsd ? ' (' + feesUsd + ')' : ''}</span>
         </div>
 
-        <div class="pos-history-toggle" onclick="togglePositionHistory(${p.token_id})">
-          <span id="pos-history-arrow-${p.token_id}">▸</span> Position History
+        <div class="pos-history-toggle" onclick="togglePositionHistory('${p.protocol}', ${p.token_id})">
+          <span id="pos-history-arrow-${posKey}">▸</span> Position History
         </div>
-        <div class="pos-history-panel" id="pos-history-panel-${p.token_id}" style="display:none;">
-          <div class="range-btns" id="pos-history-btns-${p.token_id}">
-            <button class="range-btn" onclick="setPositionHistoryRange(${p.token_id}, '7d', this)">7D</button>
-            <button class="range-btn active" onclick="setPositionHistoryRange(${p.token_id}, '30d', this)">30D</button>
-            <button class="range-btn" onclick="setPositionHistoryRange(${p.token_id}, '90d', this)">90D</button>
-            <button class="range-btn" onclick="setPositionHistoryRange(${p.token_id}, 'all', this)">All</button>
+        <div class="pos-history-panel" id="pos-history-panel-${posKey}" style="display:none;">
+          <div class="range-btns" id="pos-history-btns-${posKey}">
+            <button class="range-btn" onclick="setPositionHistoryRange('${p.protocol}', ${p.token_id}, '7d', this)">7D</button>
+            <button class="range-btn active" onclick="setPositionHistoryRange('${p.protocol}', ${p.token_id}, '30d', this)">30D</button>
+            <button class="range-btn" onclick="setPositionHistoryRange('${p.protocol}', ${p.token_id}, '90d', this)">90D</button>
+            <button class="range-btn" onclick="setPositionHistoryRange('${p.protocol}', ${p.token_id}, 'all', this)">All</button>
           </div>
-          <div class="history-chart-wrap" style="height:160px;"><canvas id="pos-history-chart-${p.token_id}"></canvas></div>
+          <div class="history-chart-wrap" style="height:160px;"><canvas id="pos-history-chart-${posKey}"></canvas></div>
 
           <div class="pos-history-subheader">Pool Volume (USD)</div>
-          <div class="range-btns" id="pos-volume-btns-${p.token_id}">
-            <button class="range-btn" onclick="setPositionVolumeRange(${p.token_id}, '7d', this)">7D</button>
-            <button class="range-btn active" onclick="setPositionVolumeRange(${p.token_id}, '30d', this)">30D</button>
-            <button class="range-btn" onclick="setPositionVolumeRange(${p.token_id}, '60d', this)">60D</button>
-            <button class="range-btn" onclick="setPositionVolumeRange(${p.token_id}, '90d', this)">90D</button>
-            <button class="range-btn" onclick="setPositionVolumeRange(${p.token_id}, '180d', this)">180D</button>
+          <div class="range-btns" id="pos-volume-btns-${posKey}">
+            <button class="range-btn" onclick="setPositionVolumeRange('${p.protocol}', ${p.token_id}, '7d', this)">7D</button>
+            <button class="range-btn active" onclick="setPositionVolumeRange('${p.protocol}', ${p.token_id}, '30d', this)">30D</button>
+            <button class="range-btn" onclick="setPositionVolumeRange('${p.protocol}', ${p.token_id}, '60d', this)">60D</button>
+            <button class="range-btn" onclick="setPositionVolumeRange('${p.protocol}', ${p.token_id}, '90d', this)">90D</button>
+            <button class="range-btn" onclick="setPositionVolumeRange('${p.protocol}', ${p.token_id}, '180d', this)">180D</button>
           </div>
-          <div class="history-chart-wrap" style="height:120px;"><canvas id="pos-volume-chart-${p.token_id}"></canvas></div>
+          <div class="history-chart-wrap" style="height:120px;"><canvas id="pos-volume-chart-${posKey}"></canvas></div>
         </div>
       </div>
     `;
@@ -271,45 +273,49 @@ const positionVolumeCurrentRange = {};
 const positionChartInstances = {};
 const positionVolumeChartInstances = {};
 
-function togglePositionHistory(tokenId) {
-  const panel = document.getElementById(`pos-history-panel-${tokenId}`);
-  const arrow = document.getElementById(`pos-history-arrow-${tokenId}`);
+function togglePositionHistory(protocol, tokenId) {
+  const posKey = `${protocol}-${tokenId}`;
+  const panel = document.getElementById(`pos-history-panel-${posKey}`);
+  const arrow = document.getElementById(`pos-history-arrow-${posKey}`);
   const isOpen = panel.style.display !== 'none';
   if (isOpen) { panel.style.display = 'none'; arrow.textContent = '▸'; return; }
   panel.style.display = 'block';
   arrow.textContent = '▾';
-  if (!positionPanelOpened[tokenId]) {
-    positionPanelOpened[tokenId] = true;
-    positionCurrentRange[tokenId] = '30d';
-    positionVolumeCurrentRange[tokenId] = '30d';
-    loadPositionHistory(tokenId, '30d');
-    loadPositionVolume(tokenId, '30d');
+  if (!positionPanelOpened[posKey]) {
+    positionPanelOpened[posKey] = true;
+    positionCurrentRange[posKey] = '30d';
+    positionVolumeCurrentRange[posKey] = '30d';
+    loadPositionHistory(protocol, tokenId, '30d');
+    loadPositionVolume(protocol, tokenId, '30d');
   }
 }
 
-function setPositionHistoryRange(tokenId, range, btnEl) {
-  positionCurrentRange[tokenId] = range;
+function setPositionHistoryRange(protocol, tokenId, range, btnEl) {
+  const posKey = `${protocol}-${tokenId}`;
+  positionCurrentRange[posKey] = range;
   btnEl.parentElement.querySelectorAll('.range-btn').forEach(b => b.classList.remove('active'));
   btnEl.classList.add('active');
-  loadPositionHistory(tokenId, range);
+  loadPositionHistory(protocol, tokenId, range);
 }
 
-function setPositionVolumeRange(tokenId, range, btnEl) {
-  positionVolumeCurrentRange[tokenId] = range;
+function setPositionVolumeRange(protocol, tokenId, range, btnEl) {
+  const posKey = `${protocol}-${tokenId}`;
+  positionVolumeCurrentRange[posKey] = range;
   btnEl.parentElement.querySelectorAll('.range-btn').forEach(b => b.classList.remove('active'));
   btnEl.classList.add('active');
-  loadPositionVolume(tokenId, range);
+  loadPositionVolume(protocol, tokenId, range);
 }
 
-async function loadPositionHistory(tokenId, range) {
-  const canvas = document.getElementById(`pos-history-chart-${tokenId}`);
+async function loadPositionHistory(protocol, tokenId, range) {
+  const posKey = `${protocol}-${tokenId}`;
+  const canvas = document.getElementById(`pos-history-chart-${posKey}`);
   try {
-    const res = await fetch(`/api/history/${tokenId}?range=${range}`);
+    const res = await fetch(`/api/history/${tokenId}?range=${range}&protocol=${protocol}`);
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Request failed');
-    renderPositionHistoryChart(tokenId, canvas, data.snapshots || []);
+    renderPositionHistoryChart(posKey, canvas, data.snapshots || []);
   } catch (e) {
-    if (positionChartInstances[tokenId]) { positionChartInstances[tokenId].destroy(); positionChartInstances[tokenId] = null; }
+    if (positionChartInstances[posKey]) { positionChartInstances[posKey].destroy(); positionChartInstances[posKey] = null; }
     canvas.style.display = 'none';
     const wrap = canvas.parentElement;
     let msg = wrap.querySelector('.history-empty');
@@ -353,16 +359,17 @@ function renderPositionHistoryChart(tokenId, canvas, snapshots) {
   });
 }
 
-async function loadPositionVolume(tokenId, range) {
-  const canvas = document.getElementById(`pos-volume-chart-${tokenId}`);
+async function loadPositionVolume(protocol, tokenId, range) {
+  const posKey = `${protocol}-${tokenId}`;
+  const canvas = document.getElementById(`pos-volume-chart-${posKey}`);
   if (!canvas) return;
   try {
-    const res = await fetch(`/api/pool-volume/${tokenId}?range=${range}`);
+    const res = await fetch(`/api/pool-volume/${tokenId}?range=${range}&protocol=${protocol}`);
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Request failed');
-    renderPositionVolumeChart(tokenId, canvas, data.candles || []);
+    renderPositionVolumeChart(posKey, canvas, data.candles || []);
   } catch (e) {
-    if (positionVolumeChartInstances[tokenId]) { positionVolumeChartInstances[tokenId].destroy(); positionVolumeChartInstances[tokenId] = null; }
+    if (positionVolumeChartInstances[posKey]) { positionVolumeChartInstances[posKey].destroy(); positionVolumeChartInstances[posKey] = null; }
     canvas.style.display = 'none';
     const wrap = canvas.parentElement;
     let msg = wrap.querySelector('.volume-empty');
@@ -405,31 +412,33 @@ function renderPositionVolumeChart(tokenId, canvas, candles) {
 
 function restoreOpenPositionHistories(positions) {
   for (const p of positions) {
+    const protocol = p.protocol;
     const tokenId = p.token_id;
-    if (!positionPanelOpened[tokenId]) continue;
-    const panel = document.getElementById(`pos-history-panel-${tokenId}`);
-    const arrow = document.getElementById(`pos-history-arrow-${tokenId}`);
+    const posKey = `${protocol}-${tokenId}`;
+    if (!positionPanelOpened[posKey]) continue;
+    const panel = document.getElementById(`pos-history-panel-${posKey}`);
+    const arrow = document.getElementById(`pos-history-arrow-${posKey}`);
     if (!panel) continue;
     panel.style.display = 'block';
     if (arrow) arrow.textContent = '▾';
 
-    const range = positionCurrentRange[tokenId] || '30d';
-    const btnsContainer = document.getElementById(`pos-history-btns-${tokenId}`);
+    const range = positionCurrentRange[posKey] || '30d';
+    const btnsContainer = document.getElementById(`pos-history-btns-${posKey}`);
     if (btnsContainer) {
       btnsContainer.querySelectorAll('.range-btn').forEach(b => {
         b.classList.toggle('active', b.textContent.trim().toLowerCase() === range.toLowerCase());
       });
     }
-    loadPositionHistory(tokenId, range);
+    loadPositionHistory(protocol, tokenId, range);
 
-    const volRange = positionVolumeCurrentRange[tokenId] || '30d';
-    const volBtnsContainer = document.getElementById(`pos-volume-btns-${tokenId}`);
+    const volRange = positionVolumeCurrentRange[posKey] || '30d';
+    const volBtnsContainer = document.getElementById(`pos-volume-btns-${posKey}`);
     if (volBtnsContainer) {
       volBtnsContainer.querySelectorAll('.range-btn').forEach(b => {
         b.classList.toggle('active', b.textContent.trim().toLowerCase() === volRange.toLowerCase());
       });
     }
-    loadPositionVolume(tokenId, volRange);
+    loadPositionVolume(protocol, tokenId, volRange);
   }
 }
 

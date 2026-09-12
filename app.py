@@ -170,9 +170,31 @@ def _write_json_locked(path: str, data):
             fcntl.flock(f, fcntl.LOCK_UN)
 
 
+def fetch_all_positions(w3, wallet: str):
+    """Resolves the Sickle once, then discovers+fetches positions across
+    every protocol in va.PROTOCOLS. The Sickle is one contract per
+    wallet per chain regardless of which connector/protocol it's
+    interacting with, so this one resolution covers all of them.
+    Returns (sickle_address, positions) — positions tagged with
+    'protocol' so callers/UI can distinguish Uniswap V3 from
+    PancakeSwap V3 (or any protocol added later)."""
+    sickle_address = va.resolve_sickle(w3, wallet)
+    if sickle_address is None:
+        return None, []
+    positions = []
+    for protocol_key, cfg in va.PROTOCOLS.items():
+        token_ids = va.discover_current_token_ids(w3, sickle_address, cfg["npm"])
+        for tid in token_ids:
+            p = va.fetch_position(w3, tid, cfg["npm"], cfg["factory"])
+            p["protocol"] = protocol_key
+            p["protocol_label"] = cfg["label"]
+            positions.append(p)
+    return sickle_address, positions
+
+
 def capture_snapshot():
     """Runs hourly. Records a baseline (value + uncollected-fees, both
-    USD) for any token_id that doesn't have one yet — self-healing: a
+    USD) for any position that doesn't have one yet — self-healing: a
     brand-new position AND a position that predates this feature both
     just get baselined at whatever their state is on the next cycle
     that sees them. Never overwrites an existing baseline."""
@@ -182,38 +204,41 @@ def capture_snapshot():
     if not w3:
         return
     try:
-        sickle_address = va.resolve_sickle(w3, DEFAULT_WALLET)
+        sickle_address, positions = fetch_all_positions(w3, DEFAULT_WALLET)
         if sickle_address is None:
             return
-        token_ids = va.discover_current_token_ids(w3, sickle_address)
-        positions = [va.fetch_position(w3, tid) for tid in token_ids]
         positions = enrich_with_usd(positions)
     except Exception as e:
         app.logger.warning("Snapshot capture failed: %s", e)
         return
 
+    # Key by protocol:token_id — token IDs are sequential per-contract,
+    # so the same numeric ID can exist on both Uniswap's and Pancake's
+    # NPM independently. Not namespacing this would silently conflate
+    # two unrelated positions.
     now = time.time()
     with _history_lock:
         known = _read_json_locked(_known_positions_file_path(), {})
-        current_ids = {str(p["token_id"]) for p in positions}
-        closed_now = [tid for tid in known if tid not in current_ids]
+        current_keys = {f"{p['protocol']}:{p['token_id']}" for p in positions}
+        closed_now = [k for k in known if k not in current_keys]
 
         if closed_now:
             closed_list = _read_json_locked(_closed_positions_file_path(), [])
-            for tid in closed_now:
-                last_known = known[tid]
+            for key in closed_now:
+                last_known = known[key]
                 closed_list.append({
-                    "token_id": int(tid),
+                    "key": key,
                     "pool": last_known.get("pool"),
+                    "protocol": last_known.get("protocol"),
                     "closed_at": now,
                     "last_value_usd": last_known.get("last_value_usd"),
                 })
-                _append_closed_marker(tid, now)
+                _append_closed_marker(key, now)
             _write_json_locked(_closed_positions_file_path(), closed_list)
 
         for p in positions:
-            tid = str(p["token_id"])
-            prior = known.get(tid, {})
+            key = f"{p['protocol']}:{p['token_id']}"
+            prior = known.get(key, {})
             baseline_value_usd = prior.get("baseline_value_usd")
             baseline_fees_usd = prior.get("baseline_fees_usd")
             baseline_ts = prior.get("baseline_ts")
@@ -221,7 +246,9 @@ def capture_snapshot():
                 baseline_value_usd = p["position_value_usd"]
                 baseline_fees_usd = p["uncollected_fees_usd"] or 0.0
                 baseline_ts = now
-            known[tid] = {
+            known[key] = {
+                "protocol": p["protocol"],
+                "token_id": p["token_id"],
                 "pool": f"{p['token0']['symbol']}/{p['token1']['symbol']}",
                 "pool_address": p["pool_address"],
                 "baseline_value_usd": baseline_value_usd,
@@ -244,7 +271,8 @@ def capture_snapshot():
 
     # Per-position history.
     for p in positions:
-        append_history_snapshot(f"pos_{p['token_id']}", {
+        key = f"{p['protocol']}:{p['token_id']}"
+        append_history_snapshot(f"pos_{key}", {
             "ts": now,
             "value_usd": p["position_value_usd"],
             "fees_usd": p["uncollected_fees_usd"],
@@ -252,12 +280,12 @@ def capture_snapshot():
         })
 
 
-def _append_closed_marker(token_id: str, ts: float):
+def _append_closed_marker(key: str, ts: float):
     """Final marker in a closed position's own history file, so its
     chart visibly shows where it ends. Caller already holds _history_lock."""
-    path = _history_file_path(f"pos_{token_id}")
+    path = _history_file_path(f"pos_{key}")
     history = _read_json_locked(path, [])
-    history.append({"ts": ts, "token_id": int(token_id), "closed": True})
+    history.append({"ts": ts, "key": key, "closed": True})
     _write_json_locked(path, history)
 
 
@@ -348,7 +376,8 @@ def attach_pnl_and_apr(positions: list) -> list:
     known = _read_json_locked(_known_positions_file_path(), {})
     now = time.time()
     for p in positions:
-        entry = known.get(str(p["token_id"]))
+        key = f"{p['protocol']}:{p['token_id']}"
+        entry = known.get(key)
         baseline_value = entry.get("baseline_value_usd") if entry else None
         baseline_fees = entry.get("baseline_fees_usd") if entry else None
         baseline_ts = entry.get("baseline_ts") if entry else None
@@ -398,15 +427,13 @@ def api_positions():
         return jsonify({"error": "ALCHEMY_BASE RPC not configured"}), 500
 
     try:
-        sickle_address = va.resolve_sickle(w3, wallet)
+        sickle_address, positions = fetch_all_positions(w3, wallet)
         if sickle_address is None:
             result = {"sickle_address": None, "positions": [], "portfolio": compute_portfolio_summary([]),
                        "fetched_at": time.time(), "note": "No Sickle deployed for this wallet on Base."}
             _cache[cache_key] = result
             return jsonify({**result, "cached": False})
 
-        token_ids = va.discover_current_token_ids(w3, sickle_address)
-        positions = [va.fetch_position(w3, tid) for tid in token_ids]
         positions = enrich_with_usd(positions)
         positions = attach_pnl_and_apr(positions)
     except Exception as e:
@@ -453,14 +480,17 @@ def api_history():
 @app.route("/api/history/<int:token_id>")
 def api_position_history(token_id):
     range_key = request.args.get("range", "30d")
+    protocol = request.args.get("protocol", "uniswap")
     if range_key not in _RANGE_TO_SECONDS:
         return jsonify({"error": "range must be one of: 7d, 30d, 90d, all"}), 400
-    history = load_history(f"pos_{token_id}")
+    if protocol not in va.PROTOCOLS:
+        return jsonify({"error": f"protocol must be one of: {', '.join(va.PROTOCOLS)}"}), 400
+    history = load_history(f"pos_{protocol}:{token_id}")
     window_seconds = _RANGE_TO_SECONDS[range_key]
     if window_seconds is not None:
         cutoff = time.time() - window_seconds
         history = [s for s in history if s["ts"] >= cutoff]
-    return jsonify({"snapshots": history, "range": range_key, "token_id": token_id})
+    return jsonify({"snapshots": history, "range": range_key, "token_id": token_id, "protocol": protocol})
 
 
 @app.route("/api/closed")
@@ -473,11 +503,14 @@ def api_closed_positions():
 @app.route("/api/pool-volume/<int:token_id>")
 def api_pool_volume(token_id):
     range_key = request.args.get("range", "30d")
+    protocol = request.args.get("protocol", "uniswap")
     if range_key not in _VOLUME_RANGE_DAYS:
         return jsonify({"error": "range must be one of: 7d, 30d, 60d, 90d, 180d"}), 400
+    if protocol not in va.PROTOCOLS:
+        return jsonify({"error": f"protocol must be one of: {', '.join(va.PROTOCOLS)}"}), 400
 
     known = _read_json_locked(_known_positions_file_path(), {})
-    entry = known.get(str(token_id))
+    entry = known.get(f"{protocol}:{token_id}")
     pool_address = entry.get("pool_address") if entry else None
     if not pool_address:
         return jsonify({"error": "Pool address not yet known for this position — "
@@ -487,7 +520,7 @@ def api_pool_volume(token_id):
     except Exception as e:
         app.logger.warning("Pool volume fetch failed for %s: %s", pool_address, e)
         return jsonify({"error": "Volume data unavailable right now"}), 502
-    return jsonify({"candles": candles, "range": range_key, "token_id": token_id})
+    return jsonify({"candles": candles, "range": range_key, "token_id": token_id, "protocol": protocol})
 
 
 _snapshot_thread = threading.Thread(target=_snapshot_loop, daemon=True)
