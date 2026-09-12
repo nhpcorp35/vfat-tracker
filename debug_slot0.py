@@ -32,7 +32,14 @@ GET_POOL_ABI = [{"inputs": [
     "stateMutability": "view", "type": "function"}]
 
 import sys
-token_id = int(sys.argv[1])
+wallet = Web3.to_checksum_address(sys.argv[1])
+
+import vfat_adapter as va
+sickle = va.resolve_sickle(w3, wallet)
+print("sickle:", sickle)
+token_ids = va.discover_current_token_ids(w3, sickle, PANCAKE_NPM)
+print("pancake token_ids:", token_ids)
+token_id = token_ids[0]
 
 npm = w3.eth.contract(address=PANCAKE_NPM, abi=POSITIONS_ABI)
 pos = npm.functions.positions(token_id).call()
