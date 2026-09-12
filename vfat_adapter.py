@@ -42,10 +42,8 @@ SICKLE_FACTORY = Web3.to_checksum_address("0x71D234A3e1dfC161cc1d081E6496e76627b
 # harvestFor transaction) or, in principle, a Pancake position staked
 # in MasterChefV3 for CAKE (checked directly: this wallet's Pancake
 # position has zero MasterChefV3 balance, all balance sits on the NPM).
-PROTOCOLS = {
-    "uniswap": {"npm": UNISWAP_V3_NPM, "factory": UNISWAP_V3_FACTORY, "label": "Uniswap V3"},
-    "pancake": {"npm": PANCAKE_V3_NPM, "factory": PANCAKE_V3_FACTORY, "label": "PancakeSwap V3"},
-}
+# PROTOCOLS is assembled further down, once UNISWAP_POOL_ABI and
+# PANCAKE_POOL_ABI both exist.
 
 Q128 = 2 ** 128
 
@@ -103,7 +101,7 @@ FACTORY_ABI = [
     },
 ]
 
-POOL_ABI = [
+UNISWAP_POOL_ABI = [
     {
         "inputs": [],
         "name": "slot0",
@@ -150,6 +148,33 @@ POOL_ABI = [
         "type": "function",
     },
 ]
+
+# PancakeSwap V3's pool declares feeProtocol as uint32, not Uniswap's
+# uint8 — confirmed by fetching the raw slot0() bytes and decoding
+# both ways rather than assuming the fork kept every field identical.
+# Everything else about the pool interface matches.
+PANCAKE_POOL_ABI = [
+    {
+        "inputs": [],
+        "name": "slot0",
+        "outputs": [
+            {"internalType": "uint160", "name": "sqrtPriceX96", "type": "uint160"},
+            {"internalType": "int24", "name": "tick", "type": "int24"},
+            {"internalType": "uint16", "name": "observationIndex", "type": "uint16"},
+            {"internalType": "uint16", "name": "observationCardinality", "type": "uint16"},
+            {"internalType": "uint16", "name": "observationCardinalityNext", "type": "uint16"},
+            {"internalType": "uint32", "name": "feeProtocol", "type": "uint32"},
+            {"internalType": "bool", "name": "unlocked", "type": "bool"},
+        ],
+        "stateMutability": "view",
+        "type": "function",
+    },
+] + UNISWAP_POOL_ABI[1:]  # feeGrowthGlobal0/1X128 and ticks() are identical across both
+
+PROTOCOLS = {
+    "uniswap": {"npm": UNISWAP_V3_NPM, "factory": UNISWAP_V3_FACTORY, "label": "Uniswap V3", "pool_abi": UNISWAP_POOL_ABI},
+    "pancake": {"npm": PANCAKE_V3_NPM, "factory": PANCAKE_V3_FACTORY, "label": "PancakeSwap V3", "pool_abi": PANCAKE_POOL_ABI},
+}
 
 ERC20_ABI = [
     {"inputs": [], "name": "symbol", "outputs": [{"internalType": "string", "name": "", "type": "string"}], "stateMutability": "view", "type": "function"},
@@ -269,7 +294,8 @@ def _live_fee_growth_inside(current_tick, tick_lower, tick_upper,
     return inside0, inside1
 
 
-def fetch_position(w3, token_id: int, npm_address: str = UNISWAP_V3_NPM, factory_address: str = UNISWAP_V3_FACTORY) -> dict:
+def fetch_position(w3, token_id: int, npm_address: str = UNISWAP_V3_NPM, factory_address: str = UNISWAP_V3_FACTORY,
+                    pool_abi: list = UNISWAP_POOL_ABI) -> dict:
     """Full position data for one Uniswap-V3-shaped NFT (works for any
     fork sharing the same NonfungiblePositionManager/Pool interface —
     confirmed for PancakeSwap V3, which is a close fork), including
@@ -285,7 +311,7 @@ def fetch_position(w3, token_id: int, npm_address: str = UNISWAP_V3_NPM, factory
 
     factory = w3.eth.contract(address=factory_address, abi=FACTORY_ABI)
     pool_address = factory.functions.getPool(token0, token1, fee).call()
-    pool = w3.eth.contract(address=Web3.to_checksum_address(pool_address), abi=POOL_ABI)
+    pool = w3.eth.contract(address=Web3.to_checksum_address(pool_address), abi=pool_abi)
 
     slot0 = pool.functions.slot0().call()
     sqrt_price_x96, current_tick = slot0[0], slot0[1]

@@ -185,7 +185,7 @@ def fetch_all_positions(w3, wallet: str):
     for protocol_key, cfg in va.PROTOCOLS.items():
         token_ids = va.discover_current_token_ids(w3, sickle_address, cfg["npm"])
         for tid in token_ids:
-            p = va.fetch_position(w3, tid, cfg["npm"], cfg["factory"])
+            p = va.fetch_position(w3, tid, cfg["npm"], cfg["factory"], cfg["pool_abi"])
             p["protocol"] = protocol_key
             p["protocol_label"] = cfg["label"]
             positions.append(p)
