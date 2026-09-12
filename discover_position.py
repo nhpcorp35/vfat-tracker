@@ -113,7 +113,7 @@ def main():
     print(f"Scanning Transfer events on NPM to={sickle_address} from block {from_block} to {latest_block} ...")
     transfer_event = npm.events.Transfer()
     try:
-        logs = transfer_event.get_logs(from_block=from_block, to_block=latest_block, argument_filters={"to": sickle_address})
+        logs = transfer_event.get_logs(fromBlock=from_block, toBlock=latest_block, argument_filters={"to": sickle_address})
     except Exception as e:
         print(f"FAILED to get logs: {e}")
         print("This RPC provider may not support the block range or filter used — may need chunked queries.")
