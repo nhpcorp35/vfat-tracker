@@ -17,6 +17,8 @@
   .header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 20px; flex-wrap: wrap; gap: 10px; }
   .title { font-size: 20px; font-weight: 600; }
   .subtitle { color: var(--muted); font-size: 12px; margin-top: 4px; }
+  .hub-link { display: inline-block; color: var(--muted); font-size: 12px; text-decoration: none; margin-bottom: 6px; }
+  .hub-link:hover { color: var(--blue); }
   #wallet-input { background: var(--surface); border: 1px solid var(--border2); color: var(--text); font-family: var(--mono); font-size: 12px; padding: 6px 10px; border-radius: 6px; width: 340px; max-width: 60vw; }
   .btn { background: var(--blue); color: #fff; border: none; font-family: var(--mono); font-size: 12px; font-weight: 500; padding: 8px 16px; border-radius: 6px; cursor: pointer; }
   .error-banner { background: var(--red-dim); border: 1px solid rgba(244,84,92,0.25); border-radius: 8px; padding: 12px 16px; font-size: 12px; color: var(--red); margin-bottom: 20px; display: none; }
@@ -80,6 +82,7 @@
 <body>
   <div class="header">
     <div>
+      <a href="https://v4.lptracker.info" class="hub-link">← Hub</a>
       <div class="title">◈ vfat Tracker</div>
       <div class="subtitle">Uniswap V3 positions held via your Sickle · Base</div>
     </div>
