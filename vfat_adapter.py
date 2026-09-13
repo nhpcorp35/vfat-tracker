@@ -105,6 +105,36 @@ AERODROME_NPM = Web3.to_checksum_address("0x827922686190790b37229fd06084350E7448
 AERODROME_POOL_FACTORY = Web3.to_checksum_address("0x5e7BB104d84c7CB9B682AaC2F3d509f5F406809A")
 AERODROME_KNOWN_TOKEN_IDS = [75410120, 75563925]
 
+# Reward/staking contracts for emissions tracking. Both confirmed
+# directly against real positions, not assumed:
+#   - Pancake: checked ownerOf() on the live position (#2121660) —
+#     it's held directly, NOT staked in MasterChefV3. This wiring is
+#     ready for if/when it IS staked, but reports not-staked (no
+#     pending CAKE) for the current position, correctly.
+#   - Aerodrome: token 75563925 is confirmed staked (owner = the real
+#     gauge contract), token 75410120 is not (owner = the Sickle
+#     itself) — checked directly, not assumed uniform.
+PANCAKE_MASTERCHEF_V3 = Web3.to_checksum_address("0xC6A2Db661D5a5690172d8eB0a7DEA2d3008665A3")
+CAKE_TOKEN_BASE = Web3.to_checksum_address("0x3055913c90Fcc1a6CE9a358911721eEb942013A1")
+
+MASTERCHEF_V3_ABI = [
+    {"inputs": [{"internalType": "uint256", "name": "_tokenId", "type": "uint256"}], "name": "pendingCake",
+     "outputs": [{"internalType": "uint256", "name": "reward", "type": "uint256"}], "stateMutability": "view", "type": "function"},
+]
+
+# ICLGauge — confirmed interface from BaseScan's verified source for
+# the actual gauge holding token 75563925. earned() mirrors
+# MasterChefV3's pendingCake(): a direct pending-reward view, no need
+# to reimplement the rewardGrowthInside accrual math ourselves.
+AERODROME_GAUGE_ABI = [
+    {"inputs": [{"internalType": "address", "name": "account", "type": "address"},
+                {"internalType": "uint256", "name": "tokenId", "type": "uint256"}],
+     "name": "earned", "outputs": [{"internalType": "uint256", "name": "", "type": "uint256"}],
+     "stateMutability": "view", "type": "function"},
+    {"inputs": [], "name": "rewardToken", "outputs": [{"internalType": "address", "name": "", "type": "address"}],
+     "stateMutability": "view", "type": "function"},
+]
+
 # Both protocols confirmed empirically (not assumed) to hold their NFT
 # directly in the Sickle — no gauge/farm staking layer, unlike
 # Aerodrome's Slipstream positions (confirmed staked via a real
@@ -565,10 +595,40 @@ def fetch_position(w3, token_id: int, npm_address: str = UNISWAP_V3_NPM, factory
         "price_upper": price_upper,
         "uncollected_fees0": live_owed0 / (10 ** dec0),
         "uncollected_fees1": live_owed1 / (10 ** dec1),
+        "is_staked": False,
+        "reward_token_address": None,
+        "reward_token_symbol": None,
+        "pending_reward": None,
     }
 
 
-def fetch_position_aerodrome(w3, token_id: int) -> dict:
+def fetch_position_pancake_with_rewards(w3, token_id: int) -> dict:
+    """Wraps fetch_position() with a MasterChefV3 staking check —
+    checked directly against the real position (#2121660): it's held
+    on the NPM directly right now, NOT staked, so this correctly
+    reports is_staked=False / pending_reward=None today. Activates
+    automatically (no code change needed) if the position is ever
+    staked in MasterChefV3 later — pendingCake() is a direct pending-
+    reward view, same pattern as Aerodrome's gauge earned()."""
+    p = fetch_position(w3, token_id, PANCAKE_V3_NPM, PANCAKE_V3_FACTORY, PANCAKE_POOL_ABI)
+
+    npm = w3.eth.contract(address=PANCAKE_V3_NPM, abi=NPM_ABI)
+    owner = npm.functions.ownerOf(token_id).call()
+    if owner == PANCAKE_MASTERCHEF_V3:
+        p["is_staked"] = True
+        try:
+            mc = w3.eth.contract(address=PANCAKE_MASTERCHEF_V3, abi=MASTERCHEF_V3_ABI)
+            pending_raw = mc.functions.pendingCake(token_id).call()
+            cake_symbol, cake_dec = _token_meta(w3, CAKE_TOKEN_BASE)
+            p["reward_token_address"] = CAKE_TOKEN_BASE
+            p["reward_token_symbol"] = cake_symbol
+            p["pending_reward"] = pending_raw / (10 ** cake_dec)
+        except Exception:
+            pass  # leave pending_reward as None rather than guess
+    return p
+
+
+def fetch_position_aerodrome(w3, token_id: int, sickle_address: str = None) -> dict:
     """Aerodrome Slipstream position data. Deliberately NOT a call to
     fetch_position() with swapped constants — the shapes genuinely
     differ (tickSpacing vs fee in positions(), a 6-field slot0, a
@@ -576,12 +636,14 @@ def fetch_position_aerodrome(w3, token_id: int) -> dict:
     directly against aerodrome-finance/slipstream's own interfaces
     rather than assumed from the Pancake precedent.
 
-    Does NOT include AERO emissions/rewards — that needs a separate
-    rewardGrowthGlobalX128 accrual mechanism that only applies to
-    staked positions in the active tick, and doesn't apply uniformly
-    even within one wallet's positions (checked directly: one of the
-    two known positions is staked in a gauge, the other is held
-    directly by the Sickle, unstaked)."""
+    AERO emissions: if sickle_address is given, checks the position's
+    current owner — if it's not the Sickle itself, treats the owner as
+    a gauge and calls its earned(sickle_address, tokenId) directly
+    (mirrors MasterChefV3's pendingCake(), no need to reimplement the
+    rewardGrowthGlobalX128 accrual ourselves). Confirmed NOT uniform
+    even within this one wallet: token 75563925 is staked, 75410120
+    isn't — is_staked and pending_aero reflect each position's actual
+    state, not an assumption."""
     npm = w3.eth.contract(address=AERODROME_NPM, abi=AERODROME_NPM_ABI)
     pos = npm.functions.positions(token_id).call()
     (nonce, operator, token0, token1, tick_spacing, tick_lower, tick_upper,
@@ -631,6 +693,31 @@ def fetch_position_aerodrome(w3, token_id: int) -> dict:
 
     in_range = tick_lower <= current_tick < tick_upper
 
+    # AERO emissions: only meaningful for a staked position, and only
+    # if we know which Sickle staked it. Owner-not-Sickle is our signal
+    # that it's in a gauge; earned() reverting (owner isn't actually a
+    # valid gauge, or some other edge case) degrades to None rather
+    # than crashing the whole position fetch.
+    is_staked = False
+    pending_reward_raw = None
+    reward_token_address = None
+    if sickle_address is not None:
+        owner = npm.functions.ownerOf(token_id).call()
+        if owner != sickle_address:
+            is_staked = True
+            try:
+                gauge = w3.eth.contract(address=owner, abi=AERODROME_GAUGE_ABI)
+                pending_reward_raw = gauge.functions.earned(sickle_address, token_id).call()
+                reward_token_address = gauge.functions.rewardToken().call()
+            except Exception:
+                pass  # owner wasn't a gauge implementing this interface, or call reverted
+
+    pending_reward = None
+    reward_token_symbol = None
+    if pending_reward_raw is not None and reward_token_address is not None:
+        reward_token_symbol, reward_dec = _token_meta(w3, reward_token_address)
+        pending_reward = pending_reward_raw / (10 ** reward_dec)
+
     return {
         "token_id": token_id,
         "pool_address": pool_address,
@@ -647,6 +734,10 @@ def fetch_position_aerodrome(w3, token_id: int) -> dict:
         "current_price": current_price,
         "price_lower": price_lower,
         "price_upper": price_upper,
+        "is_staked": is_staked,
+        "reward_token_address": reward_token_address,
+        "reward_token_symbol": reward_token_symbol,
+        "pending_reward": pending_reward,
         "uncollected_fees0": live_owed0 / (10 ** dec0),
         "uncollected_fees1": live_owed1 / (10 ** dec1),
     }
@@ -682,8 +773,7 @@ PROTOCOLS = {
     "pancake": {
         "npm": PANCAKE_V3_NPM, "factory": PANCAKE_V3_FACTORY, "label": "PancakeSwap V3",
         "discovery": "dynamic",
-        "fetch_fn": functools.partial(fetch_position, npm_address=PANCAKE_V3_NPM,
-                                       factory_address=PANCAKE_V3_FACTORY, pool_abi=PANCAKE_POOL_ABI),
+        "fetch_fn": fetch_position_pancake_with_rewards,
     },
     "aerodrome": {
         "npm": AERODROME_NPM, "factory": AERODROME_POOL_FACTORY, "label": "Aerodrome Slipstream",

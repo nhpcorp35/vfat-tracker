@@ -262,7 +262,16 @@ def fetch_all_positions(wallet: str):
                 raise ValueError(f"Unknown discovery mode: {discovery}")
 
             for tid in token_ids:
-                p = cfg["fetch_fn"](w3, tid)
+                # Aerodrome's fetch_fn needs the resolved Sickle address
+                # to tell staked-vs-unstaked apart and query the right
+                # gauge for AERO rewards — every other protocol's
+                # fetch_fn ignores an extra kwarg it doesn't declare,
+                # so this stays a special case rather than a shared
+                # convention that would confuse the simpler protocols.
+                if protocol_key == "aerodrome":
+                    p = cfg["fetch_fn"](w3, tid, sickle_address=sickle_address)
+                else:
+                    p = cfg["fetch_fn"](w3, tid)
                 p["chain"] = chain_key
                 p["chain_label"] = chain_cfg["label"]
                 p["protocol"] = protocol_key
@@ -398,6 +407,8 @@ def enrich_with_usd(positions: list) -> list:
         for p in chain_positions:
             addresses.append(p["token0"]["address"])
             addresses.append(p["token1"]["address"])
+            if p.get("reward_token_address"):
+                addresses.append(p["reward_token_address"])
         prices.update(get_token_prices_usd(addresses, gecko_network))
 
     for p in positions:
@@ -413,6 +424,13 @@ def enrich_with_usd(positions: list) -> list:
         if price0 is not None and price1 is not None:
             fees_usd = p["uncollected_fees0"] * price0 + p["uncollected_fees1"] * price1
         p["uncollected_fees_usd"] = fees_usd
+
+        pending_reward_usd = None
+        if p.get("pending_reward") is not None and p.get("reward_token_address"):
+            reward_price = prices.get(p["reward_token_address"].lower())
+            if reward_price is not None:
+                pending_reward_usd = p["pending_reward"] * reward_price
+        p["pending_reward_usd"] = pending_reward_usd
 
         # Range-bar support fields, same convention as the other trackers.
         cp, pl, pu = p.get("current_price"), p.get("price_lower"), p.get("price_upper")
