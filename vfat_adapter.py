@@ -36,6 +36,29 @@ PANCAKE_V3_NPM = Web3.to_checksum_address("0x46A15B0b27311cedF172AB29E4f4766fbE7
 PANCAKE_V3_FACTORY = Web3.to_checksum_address("0x0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865")
 SICKLE_FACTORY = Web3.to_checksum_address("0x71D234A3e1dfC161cc1d081E6496e76627baAc31")
 
+# Optimism: Uniswap V3 was deployed at the canonical cross-chain address
+# here (unlike Base, which has its own unique deployment) — verified
+# against Uniswap's own deploys.md and an independent subgraph docs
+# page, both agreeing exactly.
+OPTIMISM_UNISWAP_V3_NPM = Web3.to_checksum_address("0xC36442b4a4522E871399CD717aBDD847Ab11FE88")
+OPTIMISM_UNISWAP_V3_FACTORY = Web3.to_checksum_address("0x1F98431c8aD98523631AE4a59f267346ea31F984")
+
+# No verified SickleFactory address for Optimism, and no reliable
+# discovery mechanism either — Alchemy's enhanced APIs aren't available
+# on this chain's free public RPCs, Etherscan's NFT-transfer endpoint
+# is paid-only for Optimism, and raw eth_getLogs proved unreliable
+# (the same 10,000-block range succeeded once and failed minutes later
+# with a different error, on the same public endpoint). Given that, the
+# Sickle address and its known position(s) are supplied directly by the
+# user (verified independently: 45 bytes of bytecode — a real
+# contract — and confirmed via vfat.io's own UI to hold this exact
+# tokenId), not derived. Adding a new Optimism position later means
+# adding its tokenId here — there's no way to auto-discover it.
+OPTIMISM_SICKLE_ADDRESS = Web3.to_checksum_address("0x62aba0f25eb30993b577885b32c1b2a572000573")
+OPTIMISM_KNOWN_TOKEN_IDS = {
+    "uniswap": [1126993],
+}
+
 # Both protocols confirmed empirically (not assumed) to hold their NFT
 # directly in the Sickle — no gauge/farm staking layer, unlike
 # Aerodrome's Slipstream positions (confirmed staked via a real
@@ -176,6 +199,33 @@ PROTOCOLS = {
     "pancake": {"npm": PANCAKE_V3_NPM, "factory": PANCAKE_V3_FACTORY, "label": "PancakeSwap V3", "pool_abi": PANCAKE_POOL_ABI},
 }
 
+OPTIMISM_PROTOCOLS = {
+    "uniswap": {"npm": OPTIMISM_UNISWAP_V3_NPM, "factory": OPTIMISM_UNISWAP_V3_FACTORY,
+                "label": "Uniswap V3", "pool_abi": UNISWAP_POOL_ABI},
+}
+
+# Each chain's discovery method differs: Base resolves the Sickle
+# dynamically (SickleFactory) and discovers positions via Alchemy's
+# indexed API; Optimism has neither available, so both the Sickle
+# address and its position tokenIds are supplied directly (see the
+# OPTIMISM_SICKLE_ADDRESS / OPTIMISM_KNOWN_TOKEN_IDS comment above).
+CHAINS = {
+    "base": {
+        "label": "Base",
+        "gecko_network": "base",
+        "protocols": PROTOCOLS,
+        "discovery": "dynamic",
+    },
+    "optimism": {
+        "label": "Optimism",
+        "gecko_network": "optimism",
+        "protocols": OPTIMISM_PROTOCOLS,
+        "discovery": "known",
+        "known_sickle_address": OPTIMISM_SICKLE_ADDRESS,
+        "known_token_ids": OPTIMISM_KNOWN_TOKEN_IDS,
+    },
+}
+
 ERC20_ABI = [
     {"inputs": [], "name": "symbol", "outputs": [{"internalType": "string", "name": "", "type": "string"}], "stateMutability": "view", "type": "function"},
     {"inputs": [], "name": "decimals", "outputs": [{"internalType": "uint8", "name": "", "type": "uint8"}], "stateMutability": "view", "type": "function"},
@@ -201,6 +251,27 @@ def resolve_sickle(w3, wallet: str):
     if addr == "0x0000000000000000000000000000000000000000":
         return None
     return addr
+
+
+def check_known_token_ids(w3, sickle_address: str, npm_address: str, token_ids: list) -> list:
+    """For chains with no reliable discovery mechanism (see CHAINS'
+    'known' discovery method): confirms each supplied tokenId is still
+    held by the given address, same ownerOf()-revert-means-burned
+    handling as the dynamic path. Does NOT discover new positions —
+    a position not in the supplied list is invisible to this chain
+    until someone adds its tokenId."""
+    npm = w3.eth.contract(address=npm_address, abi=NPM_ABI)
+    current_ids = []
+    for tid in token_ids:
+        try:
+            owner = npm.functions.ownerOf(tid).call()
+        except Exception as e:
+            if "nonexistent token" in str(e):
+                continue  # burned — normal lifecycle, not an error
+            raise
+        if owner == sickle_address:
+            current_ids.append(tid)
+    return current_ids
 
 
 def discover_current_token_ids(w3, sickle_address: str, npm_address: str = UNISWAP_V3_NPM) -> list:

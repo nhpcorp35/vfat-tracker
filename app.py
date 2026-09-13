@@ -1,10 +1,15 @@
 """
 vfat-tracker — standalone service.
-Tracks vfat/Sickle-held Uniswap V3 positions on Base for a wallet.
+Tracks vfat/Sickle-held Uniswap-V3-shaped positions for a wallet,
+across multiple chains and protocols (see vfat_adapter.CHAINS).
 
-Uniswap V3 only for now (per agreed build order) — PancakeSwap V3 and
-Aerodrome Slipstream (gauge-staked, confirmed via a real harvestFor tx)
-are separate adapters, not yet built.
+Base: Uniswap V3 and PancakeSwap V3, both confirmed direct-hold (no
+gauge staking), discovered dynamically via Alchemy's indexed API.
+Optimism: Uniswap V3 only, using a known Sickle address + known
+tokenIds rather than discovery — no reliable discovery mechanism
+exists there (see vfat_adapter.py's OPTIMISM_* comments for why).
+Aerodrome Slipstream (gauge-staked, confirmed via a real harvestFor
+tx) is not yet built.
 """
 
 import os
@@ -52,14 +57,41 @@ def require_auth():
 ALCHEMY_BASE = os.environ.get("ALCHEMY_BASE", "")
 DEFAULT_WALLET = os.environ.get("DEFAULT_WALLET", "").strip()
 
-_w3 = None
+# Optimism has no Alchemy access (not configured for this key), so it
+# uses free public RPC endpoints instead — with a fallback, since these
+# proved less reliable than Alchemy (the same eth_getLogs call
+# succeeded once and failed minutes later with a different error, on
+# the same endpoint, discovered while testing Optimism directly).
+OPTIMISM_RPC_URLS = [
+    os.environ.get("OPTIMISM_RPC", "https://mainnet.optimism.io"),
+    os.environ.get("OPTIMISM_RPC_FALLBACK", "https://optimism.drpc.org"),
+]
+
+_w3_cache = {}
 
 
-def get_w3():
-    global _w3
-    if _w3 is None and ALCHEMY_BASE:
-        _w3 = Web3(Web3.HTTPProvider(ALCHEMY_BASE))
-    return _w3
+def get_w3(chain: str = "base"):
+    if chain in _w3_cache:
+        return _w3_cache[chain]
+
+    if chain == "base":
+        if not ALCHEMY_BASE:
+            return None
+        w3 = Web3(Web3.HTTPProvider(ALCHEMY_BASE))
+    elif chain == "optimism":
+        w3 = None
+        for url in OPTIMISM_RPC_URLS:
+            candidate = Web3(Web3.HTTPProvider(url))
+            if candidate.is_connected():
+                w3 = candidate
+                break
+        if w3 is None:
+            return None
+    else:
+        return None
+
+    _w3_cache[chain] = w3
+    return w3
 
 
 # ── Cache ────────────────────────────────────────────────────────────────
@@ -68,14 +100,14 @@ _stale_cache = {}
 CACHE_TTL = 120
 
 # ── Token price lookup (GeckoTerminal free/keyless API) ────────────────────
-_GECKOTERMINAL_TOKEN_PRICE_URL = "https://api.geckoterminal.com/api/v2/simple/networks/base/token_price/{}"
+_GECKOTERMINAL_TOKEN_PRICE_URL = "https://api.geckoterminal.com/api/v2/simple/networks/{}/token_price/{}"
 
 
-def get_token_prices_usd(addresses: list) -> dict:
+def get_token_prices_usd(addresses: list, gecko_network: str = "base") -> dict:
     if not addresses:
         return {}
     unique = sorted(set(a.lower() for a in addresses))
-    url = _GECKOTERMINAL_TOKEN_PRICE_URL.format(",".join(unique))
+    url = _GECKOTERMINAL_TOKEN_PRICE_URL.format(gecko_network, ",".join(unique))
     try:
         resp = requests.get(url, timeout=8)
         resp.raise_for_status()
@@ -83,23 +115,23 @@ def get_token_prices_usd(addresses: list) -> dict:
         token_prices = data.get("data", {}).get("attributes", {}).get("token_prices", {})
         return {addr.lower(): float(price) for addr, price in token_prices.items()}
     except Exception as e:
-        app.logger.warning("GeckoTerminal price fetch failed: %s", e)
+        app.logger.warning("GeckoTerminal price fetch failed (%s): %s", gecko_network, e)
         return {}
 
 
 # ── Pool trading volume (GeckoTerminal OHLCV, by pool address) ─────────────
-_GECKOTERMINAL_OHLCV_URL = "https://api.geckoterminal.com/api/v2/networks/base/pools/{}/ohlcv/day"
+_GECKOTERMINAL_OHLCV_URL = "https://api.geckoterminal.com/api/v2/networks/{}/pools/{}/ohlcv/day"
 _POOL_VOLUME_CACHE = {}
 _POOL_VOLUME_CACHE_TTL = 1800
 _VOLUME_RANGE_DAYS = {"7d": 7, "30d": 30, "60d": 60, "90d": 90, "180d": 180}
 
 
-def get_pool_volume_usd(pool_address: str, days: int) -> list:
-    cache_key = f"{pool_address.lower()}:{days}"
+def get_pool_volume_usd(pool_address: str, days: int, gecko_network: str = "base") -> list:
+    cache_key = f"{gecko_network}:{pool_address.lower()}:{days}"
     cached = _POOL_VOLUME_CACHE.get(cache_key)
     if cached and time.time() - cached["fetched_at"] < _POOL_VOLUME_CACHE_TTL:
         return cached["candles"]
-    url = _GECKOTERMINAL_OHLCV_URL.format(pool_address)
+    url = _GECKOTERMINAL_OHLCV_URL.format(gecko_network, pool_address)
     resp = requests.get(url, params={"aggregate": 1, "limit": days, "currency": "usd"}, timeout=10)
     resp.raise_for_status()
     data = resp.json()
@@ -170,26 +202,61 @@ def _write_json_locked(path: str, data):
             fcntl.flock(f, fcntl.LOCK_UN)
 
 
-def fetch_all_positions(w3, wallet: str):
-    """Resolves the Sickle once, then discovers+fetches positions across
-    every protocol in va.PROTOCOLS. The Sickle is one contract per
-    wallet per chain regardless of which connector/protocol it's
-    interacting with, so this one resolution covers all of them.
-    Returns (sickle_address, positions) — positions tagged with
-    'protocol' so callers/UI can distinguish Uniswap V3 from
-    PancakeSwap V3 (or any protocol added later)."""
-    sickle_address = va.resolve_sickle(w3, wallet)
-    if sickle_address is None:
-        return None, []
-    positions = []
-    for protocol_key, cfg in va.PROTOCOLS.items():
-        token_ids = va.discover_current_token_ids(w3, sickle_address, cfg["npm"])
-        for tid in token_ids:
-            p = va.fetch_position(w3, tid, cfg["npm"], cfg["factory"], cfg["pool_abi"])
-            p["protocol"] = protocol_key
-            p["protocol_label"] = cfg["label"]
-            positions.append(p)
-    return sickle_address, positions
+def fetch_all_positions(wallet: str):
+    """Loops every chain in va.CHAINS, and within each chain every
+    protocol, fetching whatever's currently open. Positions come back
+    tagged with 'chain' and 'protocol' so callers/UI can distinguish
+    them (and so history/baseline keys stay unique across chains and
+    protocols, since token IDs are only unique per-contract).
+
+    Caveat: for a chain using 'known' discovery (Optimism), the
+    supplied wallet is NOT used to find the Sickle — there's no
+    factory to resolve against, so it always reports the hardcoded
+    known Sickle's positions regardless of which wallet was queried.
+    That only matters if this app is ever pointed at a wallet other
+    than DEFAULT_WALLET, which isn't the current use case.
+
+    Returns {"base": sickle_address_or_None, "optimism": ..., ...},
+    positions — sickle addresses per chain, for display."""
+    all_positions = []
+    sickle_addresses = {}
+
+    for chain_key, chain_cfg in va.CHAINS.items():
+        w3 = get_w3(chain_key)
+        if w3 is None:
+            sickle_addresses[chain_key] = None
+            continue
+
+        if chain_cfg["discovery"] == "dynamic":
+            sickle_address = va.resolve_sickle(w3, wallet)
+            sickle_addresses[chain_key] = sickle_address
+            if sickle_address is None:
+                continue
+            for protocol_key, cfg in chain_cfg["protocols"].items():
+                token_ids = va.discover_current_token_ids(w3, sickle_address, cfg["npm"])
+                for tid in token_ids:
+                    p = va.fetch_position(w3, tid, cfg["npm"], cfg["factory"], cfg["pool_abi"])
+                    p["chain"] = chain_key
+                    p["chain_label"] = chain_cfg["label"]
+                    p["protocol"] = protocol_key
+                    p["protocol_label"] = cfg["label"]
+                    all_positions.append(p)
+
+        elif chain_cfg["discovery"] == "known":
+            sickle_address = chain_cfg["known_sickle_address"]
+            sickle_addresses[chain_key] = sickle_address
+            for protocol_key, cfg in chain_cfg["protocols"].items():
+                known_ids = chain_cfg["known_token_ids"].get(protocol_key, [])
+                token_ids = va.check_known_token_ids(w3, sickle_address, cfg["npm"], known_ids)
+                for tid in token_ids:
+                    p = va.fetch_position(w3, tid, cfg["npm"], cfg["factory"], cfg["pool_abi"])
+                    p["chain"] = chain_key
+                    p["chain_label"] = chain_cfg["label"]
+                    p["protocol"] = protocol_key
+                    p["protocol_label"] = cfg["label"]
+                    all_positions.append(p)
+
+    return sickle_addresses, all_positions
 
 
 def capture_snapshot():
@@ -200,26 +267,22 @@ def capture_snapshot():
     that sees them. Never overwrites an existing baseline."""
     if not DEFAULT_WALLET:
         return
-    w3 = get_w3()
-    if not w3:
-        return
     try:
-        sickle_address, positions = fetch_all_positions(w3, DEFAULT_WALLET)
-        if sickle_address is None:
-            return
+        sickle_addresses, positions = fetch_all_positions(DEFAULT_WALLET)
         positions = enrich_with_usd(positions)
     except Exception as e:
         app.logger.warning("Snapshot capture failed: %s", e)
         return
 
-    # Key by protocol:token_id — token IDs are sequential per-contract,
-    # so the same numeric ID can exist on both Uniswap's and Pancake's
-    # NPM independently. Not namespacing this would silently conflate
-    # two unrelated positions.
+    # Key by chain:protocol:token_id — token IDs are sequential
+    # per-contract, so the same numeric ID can exist independently on
+    # Base's Uniswap NPM, Base's Pancake NPM, and Optimism's Uniswap
+    # NPM. Not namespacing this would silently conflate unrelated
+    # positions across chains as well as across protocols.
     now = time.time()
     with _history_lock:
         known = _read_json_locked(_known_positions_file_path(), {})
-        current_keys = {f"{p['protocol']}:{p['token_id']}" for p in positions}
+        current_keys = {f"{p['chain']}:{p['protocol']}:{p['token_id']}" for p in positions}
         closed_now = [k for k in known if k not in current_keys]
 
         if closed_now:
@@ -229,6 +292,7 @@ def capture_snapshot():
                 closed_list.append({
                     "key": key,
                     "pool": last_known.get("pool"),
+                    "chain": last_known.get("chain"),
                     "protocol": last_known.get("protocol"),
                     "closed_at": now,
                     "last_value_usd": last_known.get("last_value_usd"),
@@ -237,7 +301,7 @@ def capture_snapshot():
             _write_json_locked(_closed_positions_file_path(), closed_list)
 
         for p in positions:
-            key = f"{p['protocol']}:{p['token_id']}"
+            key = f"{p['chain']}:{p['protocol']}:{p['token_id']}"
             prior = known.get(key, {})
             baseline_value_usd = prior.get("baseline_value_usd")
             baseline_fees_usd = prior.get("baseline_fees_usd")
@@ -247,6 +311,7 @@ def capture_snapshot():
                 baseline_fees_usd = p["uncollected_fees_usd"] or 0.0
                 baseline_ts = now
             known[key] = {
+                "chain": p["chain"],
                 "protocol": p["protocol"],
                 "token_id": p["token_id"],
                 "pool": f"{p['token0']['symbol']}/{p['token1']['symbol']}",
@@ -271,7 +336,7 @@ def capture_snapshot():
 
     # Per-position history.
     for p in positions:
-        key = f"{p['protocol']}:{p['token_id']}"
+        key = f"{p['chain']}:{p['protocol']}:{p['token_id']}"
         append_history_snapshot(f"pos_{key}", {
             "ts": now,
             "value_usd": p["position_value_usd"],
@@ -300,12 +365,27 @@ def _snapshot_loop():
 
 def enrich_with_usd(positions: list) -> list:
     """Adds USD values and range-bar-support fields. Fields are None
-    where price data wasn't available — never fabricated."""
-    all_addresses = []
+    where price data wasn't available — never fabricated.
+
+    Prices are looked up per-chain (grouped, not all together) — a
+    token address on Optimism is a different contract than the same
+    symbol on Base, and GeckoTerminal scopes its token_price lookup by
+    network. Querying everything under one network would silently
+    return no price for the other chain's tokens rather than a wrong
+    one, but "silently missing" for an entire chain isn't much better —
+    worth doing properly."""
+    positions_by_chain = {}
     for p in positions:
-        all_addresses.append(p["token0"]["address"])
-        all_addresses.append(p["token1"]["address"])
-    prices = get_token_prices_usd(all_addresses)
+        positions_by_chain.setdefault(p["chain"], []).append(p)
+
+    prices = {}
+    for chain_key, chain_positions in positions_by_chain.items():
+        gecko_network = va.CHAINS[chain_key]["gecko_network"]
+        addresses = []
+        for p in chain_positions:
+            addresses.append(p["token0"]["address"])
+            addresses.append(p["token1"]["address"])
+        prices.update(get_token_prices_usd(addresses, gecko_network))
 
     for p in positions:
         price0 = prices.get(p["token0"]["address"].lower())
@@ -376,7 +456,7 @@ def attach_pnl_and_apr(positions: list) -> list:
     known = _read_json_locked(_known_positions_file_path(), {})
     now = time.time()
     for p in positions:
-        key = f"{p['protocol']}:{p['token_id']}"
+        key = f"{p['chain']}:{p['protocol']}:{p['token_id']}"
         entry = known.get(key)
         baseline_value = entry.get("baseline_value_usd") if entry else None
         baseline_fees = entry.get("baseline_fees_usd") if entry else None
@@ -422,18 +502,8 @@ def api_positions():
     if not bust and cached and time.time() - cached["fetched_at"] < CACHE_TTL:
         return jsonify({**cached, "cached": True})
 
-    w3 = get_w3()
-    if not w3:
-        return jsonify({"error": "ALCHEMY_BASE RPC not configured"}), 500
-
     try:
-        sickle_address, positions = fetch_all_positions(w3, wallet)
-        if sickle_address is None:
-            result = {"sickle_address": None, "positions": [], "portfolio": compute_portfolio_summary([]),
-                       "fetched_at": time.time(), "note": "No Sickle deployed for this wallet on Base."}
-            _cache[cache_key] = result
-            return jsonify({**result, "cached": False})
-
+        sickle_addresses, positions = fetch_all_positions(wallet)
         positions = enrich_with_usd(positions)
         positions = attach_pnl_and_apr(positions)
     except Exception as e:
@@ -446,7 +516,7 @@ def api_positions():
 
     portfolio = compute_portfolio_summary(positions)
     result = {
-        "sickle_address": sickle_address,
+        "sickle_addresses": sickle_addresses,
         "positions": positions,
         "portfolio": portfolio,
         "fetched_at": time.time(),
@@ -481,16 +551,19 @@ def api_history():
 def api_position_history(token_id):
     range_key = request.args.get("range", "30d")
     protocol = request.args.get("protocol", "uniswap")
+    chain = request.args.get("chain", "base")
     if range_key not in _RANGE_TO_SECONDS:
         return jsonify({"error": "range must be one of: 7d, 30d, 90d, all"}), 400
-    if protocol not in va.PROTOCOLS:
-        return jsonify({"error": f"protocol must be one of: {', '.join(va.PROTOCOLS)}"}), 400
-    history = load_history(f"pos_{protocol}:{token_id}")
+    if chain not in va.CHAINS:
+        return jsonify({"error": f"chain must be one of: {', '.join(va.CHAINS)}"}), 400
+    if protocol not in va.CHAINS[chain]["protocols"]:
+        return jsonify({"error": f"protocol must be one of: {', '.join(va.CHAINS[chain]['protocols'])} for chain {chain}"}), 400
+    history = load_history(f"pos_{chain}:{protocol}:{token_id}")
     window_seconds = _RANGE_TO_SECONDS[range_key]
     if window_seconds is not None:
         cutoff = time.time() - window_seconds
         history = [s for s in history if s["ts"] >= cutoff]
-    return jsonify({"snapshots": history, "range": range_key, "token_id": token_id, "protocol": protocol})
+    return jsonify({"snapshots": history, "range": range_key, "token_id": token_id, "protocol": protocol, "chain": chain})
 
 
 @app.route("/api/closed")
@@ -504,23 +577,27 @@ def api_closed_positions():
 def api_pool_volume(token_id):
     range_key = request.args.get("range", "30d")
     protocol = request.args.get("protocol", "uniswap")
+    chain = request.args.get("chain", "base")
     if range_key not in _VOLUME_RANGE_DAYS:
         return jsonify({"error": "range must be one of: 7d, 30d, 60d, 90d, 180d"}), 400
-    if protocol not in va.PROTOCOLS:
-        return jsonify({"error": f"protocol must be one of: {', '.join(va.PROTOCOLS)}"}), 400
+    if chain not in va.CHAINS:
+        return jsonify({"error": f"chain must be one of: {', '.join(va.CHAINS)}"}), 400
+    if protocol not in va.CHAINS[chain]["protocols"]:
+        return jsonify({"error": f"protocol must be one of: {', '.join(va.CHAINS[chain]['protocols'])} for chain {chain}"}), 400
 
     known = _read_json_locked(_known_positions_file_path(), {})
-    entry = known.get(f"{protocol}:{token_id}")
+    entry = known.get(f"{chain}:{protocol}:{token_id}")
     pool_address = entry.get("pool_address") if entry else None
     if not pool_address:
         return jsonify({"error": "Pool address not yet known for this position — "
                                   "check back after the next snapshot cycle."}), 404
     try:
-        candles = get_pool_volume_usd(pool_address, _VOLUME_RANGE_DAYS[range_key])
+        gecko_network = va.CHAINS[chain]["gecko_network"]
+        candles = get_pool_volume_usd(pool_address, _VOLUME_RANGE_DAYS[range_key], gecko_network)
     except Exception as e:
         app.logger.warning("Pool volume fetch failed for %s: %s", pool_address, e)
         return jsonify({"error": "Volume data unavailable right now"}), 502
-    return jsonify({"candles": candles, "range": range_key, "token_id": token_id, "protocol": protocol})
+    return jsonify({"candles": candles, "range": range_key, "token_id": token_id, "protocol": protocol, "chain": chain})
 
 
 _snapshot_thread = threading.Thread(target=_snapshot_loop, daemon=True)
