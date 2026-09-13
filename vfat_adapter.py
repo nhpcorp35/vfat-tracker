@@ -74,6 +74,37 @@ MAINNET_KNOWN_TOKEN_IDS = {
     "uniswap": [1357998],
 }
 
+# Aerodrome Slipstream (Base) — a genuinely different shape, not just a
+# type mismatch like Pancake's. All verified directly against
+# aerodrome-finance/slipstream's own GitHub interfaces and cross-checked
+# on-chain (discover_aerodrome.py), not assumed:
+#   - positions() returns tickSpacing where Uniswap/Pancake return fee —
+#     same tuple length, different field. Fee is dynamic per-pool, read
+#     separately via fee() — not built here; not needed for value/range.
+#   - slot0() has only 6 fields (uint160, int24, uint16, uint16, uint16,
+#     bool) — feeProtocol is dropped entirely, not just retyped.
+#   - ticks() has 10 fields, not 8 — stakedLiquidityNet inserted right
+#     after liquidityNet, and rewardGrowthOutsideX128 inserted right
+#     after feeGrowthOutside1X128 (both confirmed from BaseScan's
+#     verified source for the SlipStream Quoter contract, which
+#     documents the same ICLPool interface).
+#   - Positions are NOT uniformly gauge-staked: checked both known
+#     tokenIds directly and found one held by the Sickle itself, the
+#     other by an actual gauge contract. No single expected owner to
+#     check against — existence (not-burned) is the only thing verified
+#     for this protocol, not a specific holder.
+#   - AERO emissions/rewards are NOT covered here — a separate
+#     rewardGrowthGlobalX128 accrual mechanism exists, but only for
+#     staked positions in the active tick, which doesn't apply
+#     uniformly across even this one wallet's two positions.
+# Addresses confirmed from aerodrome-finance/slipstream's own deployment
+# table (GitHub), not just a BaseScan label — the "PoolFactory" and
+# "PoolImplementation" addresses looked similar enough on BaseScan to
+# almost use the wrong one.
+AERODROME_NPM = Web3.to_checksum_address("0x827922686190790b37229fd06084350E74485b72")
+AERODROME_POOL_FACTORY = Web3.to_checksum_address("0x5e7BB104d84c7CB9B682AaC2F3d509f5F406809A")
+AERODROME_KNOWN_TOKEN_IDS = [75410120, 75563925]
+
 # Both protocols confirmed empirically (not assumed) to hold their NFT
 # directly in the Sickle — no gauge/farm staking layer, unlike
 # Aerodrome's Slipstream positions (confirmed staked via a real
@@ -209,50 +240,114 @@ PANCAKE_POOL_ABI = [
     },
 ] + UNISWAP_POOL_ABI[1:]  # feeGrowthGlobal0/1X128 and ticks() are identical across both
 
-PROTOCOLS = {
-    "uniswap": {"npm": UNISWAP_V3_NPM, "factory": UNISWAP_V3_FACTORY, "label": "Uniswap V3", "pool_abi": UNISWAP_POOL_ABI},
-    "pancake": {"npm": PANCAKE_V3_NPM, "factory": PANCAKE_V3_FACTORY, "label": "PancakeSwap V3", "pool_abi": PANCAKE_POOL_ABI},
-}
-
-OPTIMISM_PROTOCOLS = {
-    "uniswap": {"npm": OPTIMISM_UNISWAP_V3_NPM, "factory": OPTIMISM_UNISWAP_V3_FACTORY,
-                "label": "Uniswap V3", "pool_abi": UNISWAP_POOL_ABI},
-}
-
-MAINNET_PROTOCOLS = {
-    "uniswap": {"npm": MAINNET_UNISWAP_V3_NPM, "factory": MAINNET_UNISWAP_V3_FACTORY,
-                "label": "Uniswap V3", "pool_abi": UNISWAP_POOL_ABI},
-}
-
-# Each chain's discovery method differs: Base resolves the Sickle
-# dynamically (SickleFactory) and discovers positions via Alchemy's
-# indexed API; Optimism and mainnet have no verified factory, so both
-# the Sickle address and its position tokenIds are supplied directly
-# (see the OPTIMISM_*/MAINNET_* comments above).
-CHAINS = {
-    "base": {
-        "label": "Base",
-        "gecko_network": "base",
-        "protocols": PROTOCOLS,
-        "discovery": "dynamic",
+# Aerodrome Slipstream: positions() has tickSpacing where Uniswap/Pancake
+# have fee (same tuple length otherwise) — needs its own NPM_ABI entry
+# rather than reusing NPM_ABI's positions().
+AERODROME_NPM_ABI = [
+    {
+        "inputs": [{"internalType": "uint256", "name": "tokenId", "type": "uint256"}],
+        "name": "ownerOf",
+        "outputs": [{"internalType": "address", "name": "", "type": "address"}],
+        "stateMutability": "view",
+        "type": "function",
     },
-    "optimism": {
-        "label": "Optimism",
-        "gecko_network": "optimism",
-        "protocols": OPTIMISM_PROTOCOLS,
-        "discovery": "known",
-        "known_sickle_address": OPTIMISM_SICKLE_ADDRESS,
-        "known_token_ids": OPTIMISM_KNOWN_TOKEN_IDS,
+    {
+        "inputs": [{"internalType": "uint256", "name": "tokenId", "type": "uint256"}],
+        "name": "positions",
+        "outputs": [
+            {"internalType": "uint96", "name": "nonce", "type": "uint96"},
+            {"internalType": "address", "name": "operator", "type": "address"},
+            {"internalType": "address", "name": "token0", "type": "address"},
+            {"internalType": "address", "name": "token1", "type": "address"},
+            {"internalType": "int24", "name": "tickSpacing", "type": "int24"},
+            {"internalType": "int24", "name": "tickLower", "type": "int24"},
+            {"internalType": "int24", "name": "tickUpper", "type": "int24"},
+            {"internalType": "uint128", "name": "liquidity", "type": "uint128"},
+            {"internalType": "uint256", "name": "feeGrowthInside0LastX128", "type": "uint256"},
+            {"internalType": "uint256", "name": "feeGrowthInside1LastX128", "type": "uint256"},
+            {"internalType": "uint128", "name": "tokensOwed0", "type": "uint128"},
+            {"internalType": "uint128", "name": "tokensOwed1", "type": "uint128"},
+        ],
+        "stateMutability": "view",
+        "type": "function",
     },
-    "mainnet": {
-        "label": "Ethereum",
-        "gecko_network": "eth",
-        "protocols": MAINNET_PROTOCOLS,
-        "discovery": "known",
-        "known_sickle_address": MAINNET_SICKLE_ADDRESS,
-        "known_token_ids": MAINNET_KNOWN_TOKEN_IDS,
+]
+
+AERODROME_FACTORY_ABI = [
+    {
+        "inputs": [
+            {"internalType": "address", "name": "tokenA", "type": "address"},
+            {"internalType": "address", "name": "tokenB", "type": "address"},
+            {"internalType": "int24", "name": "tickSpacing", "type": "int24"},
+        ],
+        "name": "getPool",
+        "outputs": [{"internalType": "address", "name": "pool", "type": "address"}],
+        "stateMutability": "view",
+        "type": "function",
     },
-}
+]
+
+AERODROME_POOL_ABI = [
+    {
+        "inputs": [],
+        "name": "slot0",
+        "outputs": [
+            {"internalType": "uint160", "name": "sqrtPriceX96", "type": "uint160"},
+            {"internalType": "int24", "name": "tick", "type": "int24"},
+            {"internalType": "uint16", "name": "observationIndex", "type": "uint16"},
+            {"internalType": "uint16", "name": "observationCardinality", "type": "uint16"},
+            {"internalType": "uint16", "name": "observationCardinalityNext", "type": "uint16"},
+            {"internalType": "bool", "name": "unlocked", "type": "bool"},
+        ],
+        "stateMutability": "view",
+        "type": "function",
+    },
+    {
+        "inputs": [],
+        "name": "fee",
+        "outputs": [{"internalType": "uint24", "name": "", "type": "uint24"}],
+        "stateMutability": "view",
+        "type": "function",
+    },
+    {
+        "inputs": [],
+        "name": "feeGrowthGlobal0X128",
+        "outputs": [{"internalType": "uint256", "name": "", "type": "uint256"}],
+        "stateMutability": "view",
+        "type": "function",
+    },
+    {
+        "inputs": [],
+        "name": "feeGrowthGlobal1X128",
+        "outputs": [{"internalType": "uint256", "name": "", "type": "uint256"}],
+        "stateMutability": "view",
+        "type": "function",
+    },
+    {
+        "inputs": [{"internalType": "int24", "name": "tick", "type": "int24"}],
+        "name": "ticks",
+        "outputs": [
+            {"internalType": "uint128", "name": "liquidityGross", "type": "uint128"},
+            {"internalType": "int128", "name": "liquidityNet", "type": "int128"},
+            {"internalType": "int128", "name": "stakedLiquidityNet", "type": "int128"},
+            {"internalType": "uint256", "name": "feeGrowthOutside0X128", "type": "uint256"},
+            {"internalType": "uint256", "name": "feeGrowthOutside1X128", "type": "uint256"},
+            {"internalType": "uint256", "name": "rewardGrowthOutsideX128", "type": "uint256"},
+            {"internalType": "int56", "name": "tickCumulativeOutside", "type": "int56"},
+            {"internalType": "uint160", "name": "secondsPerLiquidityOutsideX128", "type": "uint160"},
+            {"internalType": "uint32", "name": "secondsOutside", "type": "uint32"},
+            {"internalType": "bool", "name": "initialized", "type": "bool"},
+        ],
+        "stateMutability": "view",
+        "type": "function",
+    },
+]
+
+import functools
+
+# PROTOCOLS/OPTIMISM_PROTOCOLS/MAINNET_PROTOCOLS/CHAINS are assembled at
+# the end of this file, once fetch_position and fetch_position_aerodrome
+# both exist — they reference those functions directly.
 
 ERC20_ABI = [
     {"inputs": [], "name": "symbol", "outputs": [{"internalType": "string", "name": "", "type": "string"}], "stateMutability": "view", "type": "function"},
@@ -369,12 +464,18 @@ def _amounts_for_liquidity(sqrt_price, sqrt_lower, sqrt_upper, liquidity):
 
 def _live_fee_growth_inside(current_tick, tick_lower, tick_upper,
                              fee_growth_global0, fee_growth_global1,
-                             lower_tick_data, upper_tick_data):
+                             lower_outside0, lower_outside1,
+                             upper_outside0, upper_outside1):
     """Uniswap V3's feeGrowthInside calc — the piece that makes fees
     real-time instead of stale-as-of-last-touch. Mirrors the reference
-    implementation (Tick.getFeeGrowthInside)."""
-    (_, _, lower_outside0, lower_outside1, *_rest_l) = lower_tick_data
-    (_, _, upper_outside0, upper_outside1, *_rest_u) = upper_tick_data
+    implementation (Tick.getFeeGrowthInside).
+
+    Takes feeGrowthOutside values directly rather than a raw ticks()
+    tuple — Aerodrome's ticks() has 10 fields in a different order
+    than Uniswap/Pancake's 8 (stakedLiquidityNet and
+    rewardGrowthOutsideX128 inserted at specific positions, not
+    appended), so positional tuple-unpacking here would silently grab
+    the wrong fields for that protocol instead of erroring."""
 
     if current_tick >= tick_lower:
         below0, below1 = lower_outside0, lower_outside1
@@ -420,11 +521,14 @@ def fetch_position(w3, token_id: int, npm_address: str = UNISWAP_V3_NPM, factory
     fee_growth_global1 = pool.functions.feeGrowthGlobal1X128().call()
     lower_tick_data = pool.functions.ticks(tick_lower).call()
     upper_tick_data = pool.functions.ticks(tick_upper).call()
+    # Uniswap/Pancake shape: (liquidityGross, liquidityNet, feeGrowthOutside0X128, feeGrowthOutside1X128, ...)
+    lower_outside0, lower_outside1 = lower_tick_data[2], lower_tick_data[3]
+    upper_outside0, upper_outside1 = upper_tick_data[2], upper_tick_data[3]
 
     fee_growth_inside0, fee_growth_inside1 = _live_fee_growth_inside(
         current_tick, tick_lower, tick_upper,
         fee_growth_global0, fee_growth_global1,
-        lower_tick_data, upper_tick_data,
+        lower_outside0, lower_outside1, upper_outside0, upper_outside1,
     )
 
     # Live uncollected = tokensOwed (as of last touch) + liquidity *
@@ -462,3 +566,181 @@ def fetch_position(w3, token_id: int, npm_address: str = UNISWAP_V3_NPM, factory
         "uncollected_fees0": live_owed0 / (10 ** dec0),
         "uncollected_fees1": live_owed1 / (10 ** dec1),
     }
+
+
+def fetch_position_aerodrome(w3, token_id: int) -> dict:
+    """Aerodrome Slipstream position data. Deliberately NOT a call to
+    fetch_position() with swapped constants — the shapes genuinely
+    differ (tickSpacing vs fee in positions(), a 6-field slot0, a
+    10-field ticks() with fields in different positions), verified
+    directly against aerodrome-finance/slipstream's own interfaces
+    rather than assumed from the Pancake precedent.
+
+    Does NOT include AERO emissions/rewards — that needs a separate
+    rewardGrowthGlobalX128 accrual mechanism that only applies to
+    staked positions in the active tick, and doesn't apply uniformly
+    even within one wallet's positions (checked directly: one of the
+    two known positions is staked in a gauge, the other is held
+    directly by the Sickle, unstaked)."""
+    npm = w3.eth.contract(address=AERODROME_NPM, abi=AERODROME_NPM_ABI)
+    pos = npm.functions.positions(token_id).call()
+    (nonce, operator, token0, token1, tick_spacing, tick_lower, tick_upper,
+     liquidity, fee_growth_inside0_last, fee_growth_inside1_last,
+     tokens_owed0, tokens_owed1) = pos
+
+    sym0, dec0 = _token_meta(w3, token0)
+    sym1, dec1 = _token_meta(w3, token1)
+
+    factory = w3.eth.contract(address=AERODROME_POOL_FACTORY, abi=AERODROME_FACTORY_ABI)
+    pool_address = factory.functions.getPool(token0, token1, tick_spacing).call()
+    pool = w3.eth.contract(address=Web3.to_checksum_address(pool_address), abi=AERODROME_POOL_ABI)
+
+    slot0 = pool.functions.slot0().call()
+    sqrt_price_x96, current_tick = slot0[0], slot0[1]
+    sqrt_price = sqrt_price_x96 / (2 ** 96)
+    dynamic_fee = pool.functions.fee().call()
+
+    fee_growth_global0 = pool.functions.feeGrowthGlobal0X128().call()
+    fee_growth_global1 = pool.functions.feeGrowthGlobal1X128().call()
+    lower_tick_data = pool.functions.ticks(tick_lower).call()
+    upper_tick_data = pool.functions.ticks(tick_upper).call()
+    # Aerodrome shape: (liquidityGross, liquidityNet, stakedLiquidityNet,
+    # feeGrowthOutside0X128, feeGrowthOutside1X128, rewardGrowthOutsideX128, ...)
+    # feeGrowthOutside is at index 3,4 here — NOT 2,3 like Uniswap/Pancake,
+    # because stakedLiquidityNet is inserted before it.
+    lower_outside0, lower_outside1 = lower_tick_data[3], lower_tick_data[4]
+    upper_outside0, upper_outside1 = upper_tick_data[3], upper_tick_data[4]
+
+    fee_growth_inside0, fee_growth_inside1 = _live_fee_growth_inside(
+        current_tick, tick_lower, tick_upper,
+        fee_growth_global0, fee_growth_global1,
+        lower_outside0, lower_outside1, upper_outside0, upper_outside1,
+    )
+
+    live_owed0 = tokens_owed0 + liquidity * ((fee_growth_inside0 - fee_growth_inside0_last) % Q128) // Q128
+    live_owed1 = tokens_owed1 + liquidity * ((fee_growth_inside1 - fee_growth_inside1_last) % Q128) // Q128
+
+    sqrt_lower = _tick_to_sqrt_price(tick_lower)
+    sqrt_upper = _tick_to_sqrt_price(tick_upper)
+    amt0_raw, amt1_raw = _amounts_for_liquidity(sqrt_price, sqrt_lower, sqrt_upper, liquidity)
+
+    decimal_adjustment = 10 ** (dec0 - dec1)
+    current_price = (sqrt_price ** 2) * decimal_adjustment
+    price_lower = (sqrt_lower ** 2) * decimal_adjustment
+    price_upper = (sqrt_upper ** 2) * decimal_adjustment
+
+    in_range = tick_lower <= current_tick < tick_upper
+
+    return {
+        "token_id": token_id,
+        "pool_address": pool_address,
+        "token0": {"address": token0, "symbol": sym0, "decimals": dec0},
+        "token1": {"address": token1, "symbol": sym1, "decimals": dec1},
+        "fee_tier": dynamic_fee,  # dynamic, not a fixed tier — may change between reads
+        "tick_lower": tick_lower,
+        "tick_upper": tick_upper,
+        "current_tick": current_tick,
+        "in_range": in_range,
+        "liquidity": liquidity,
+        "amount0": amt0_raw / (10 ** dec0),
+        "amount1": amt1_raw / (10 ** dec1),
+        "current_price": current_price,
+        "price_lower": price_lower,
+        "price_upper": price_upper,
+        "uncollected_fees0": live_owed0 / (10 ** dec0),
+        "uncollected_fees1": live_owed1 / (10 ** dec1),
+    }
+
+
+def check_known_token_ids_exists_only(w3, npm_address: str, token_ids: list) -> list:
+    """For protocols where ownership legitimately varies per position —
+    Aerodrome's staked-vs-unstaked split, confirmed directly: one known
+    tokenId is held by the Sickle itself, the other by an actual gauge
+    contract. No single expected owner to check against, so this only
+    verifies the position still exists (ownerOf doesn't revert) rather
+    than who holds it."""
+    current_ids = []
+    npm = w3.eth.contract(address=npm_address, abi=AERODROME_NPM_ABI)
+    for tid in token_ids:
+        try:
+            npm.functions.ownerOf(tid).call()
+        except Exception as e:
+            if "nonexistent token" in str(e):
+                continue  # burned — normal lifecycle, not an error
+            raise
+        current_ids.append(tid)
+    return current_ids
+
+
+PROTOCOLS = {
+    "uniswap": {
+        "npm": UNISWAP_V3_NPM, "factory": UNISWAP_V3_FACTORY, "label": "Uniswap V3",
+        "discovery": "dynamic",
+        "fetch_fn": functools.partial(fetch_position, npm_address=UNISWAP_V3_NPM,
+                                       factory_address=UNISWAP_V3_FACTORY, pool_abi=UNISWAP_POOL_ABI),
+    },
+    "pancake": {
+        "npm": PANCAKE_V3_NPM, "factory": PANCAKE_V3_FACTORY, "label": "PancakeSwap V3",
+        "discovery": "dynamic",
+        "fetch_fn": functools.partial(fetch_position, npm_address=PANCAKE_V3_NPM,
+                                       factory_address=PANCAKE_V3_FACTORY, pool_abi=PANCAKE_POOL_ABI),
+    },
+    "aerodrome": {
+        "npm": AERODROME_NPM, "factory": AERODROME_POOL_FACTORY, "label": "Aerodrome Slipstream",
+        "discovery": "known_exists_only",  # ownership varies (Sickle directly OR a gauge) — see comments above
+        "known_token_ids": AERODROME_KNOWN_TOKEN_IDS,
+        "fetch_fn": fetch_position_aerodrome,
+    },
+}
+
+OPTIMISM_PROTOCOLS = {
+    "uniswap": {
+        "npm": OPTIMISM_UNISWAP_V3_NPM, "factory": OPTIMISM_UNISWAP_V3_FACTORY, "label": "Uniswap V3",
+        "discovery": "known_owner_check",
+        "known_token_ids": OPTIMISM_KNOWN_TOKEN_IDS["uniswap"],
+        "expected_owner": OPTIMISM_SICKLE_ADDRESS,
+        "fetch_fn": functools.partial(fetch_position, npm_address=OPTIMISM_UNISWAP_V3_NPM,
+                                       factory_address=OPTIMISM_UNISWAP_V3_FACTORY, pool_abi=UNISWAP_POOL_ABI),
+    },
+}
+
+MAINNET_PROTOCOLS = {
+    "uniswap": {
+        "npm": MAINNET_UNISWAP_V3_NPM, "factory": MAINNET_UNISWAP_V3_FACTORY, "label": "Uniswap V3",
+        "discovery": "known_owner_check",
+        "known_token_ids": MAINNET_KNOWN_TOKEN_IDS["uniswap"],
+        "expected_owner": MAINNET_SICKLE_ADDRESS,
+        "fetch_fn": functools.partial(fetch_position, npm_address=MAINNET_UNISWAP_V3_NPM,
+                                       factory_address=MAINNET_UNISWAP_V3_FACTORY, pool_abi=UNISWAP_POOL_ABI),
+    },
+}
+
+# Each chain resolves its Sickle differently: Base has a verified
+# factory (SickleFactory.sickles(wallet)); Optimism and mainnet don't,
+# so a fixed known Sickle address is used there instead (see the
+# OPTIMISM_*/MAINNET_* comments above) — shown for reference/display,
+# not used for per-protocol discovery (each protocol now carries its
+# own 'discovery' mode, since Base mixes dynamic protocols with
+# Aerodrome's known-exists-only one in the same chain).
+CHAINS = {
+    "base": {
+        "label": "Base",
+        "gecko_network": "base",
+        "protocols": PROTOCOLS,
+        "sickle_resolution": "dynamic",
+    },
+    "optimism": {
+        "label": "Optimism",
+        "gecko_network": "optimism",
+        "protocols": OPTIMISM_PROTOCOLS,
+        "sickle_resolution": "fixed",
+        "fixed_sickle_address": OPTIMISM_SICKLE_ADDRESS,
+    },
+    "mainnet": {
+        "label": "Ethereum",
+        "gecko_network": "eth",
+        "protocols": MAINNET_PROTOCOLS,
+        "sickle_resolution": "fixed",
+        "fixed_sickle_address": MAINNET_SICKLE_ADDRESS,
+    },
+}

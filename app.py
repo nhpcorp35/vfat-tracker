@@ -216,15 +216,22 @@ def fetch_all_positions(wallet: str):
     them (and so history/baseline keys stay unique across chains and
     protocols, since token IDs are only unique per-contract).
 
-    Caveat: for a chain using 'known' discovery (Optimism), the
-    supplied wallet is NOT used to find the Sickle — there's no
-    factory to resolve against, so it always reports the hardcoded
-    known Sickle's positions regardless of which wallet was queried.
-    That only matters if this app is ever pointed at a wallet other
-    than DEFAULT_WALLET, which isn't the current use case.
+    Discovery is per-PROTOCOL, not per-chain — Base mixes 'dynamic'
+    protocols (Uniswap, Pancake: direct-hold, discovered via Alchemy)
+    with Aerodrome's 'known_exists_only' (ownership genuinely varies —
+    checked directly: one known position is held by the Sickle itself,
+    the other by an actual gauge — so no single expected owner to
+    verify against, just existence). Optimism/mainnet use
+    'known_owner_check' (a fixed known Sickle, no factory available).
 
-    Returns {"base": sickle_address_or_None, "optimism": ..., ...},
-    positions — sickle addresses per chain, for display."""
+    Caveat: for 'known_*' protocols, the supplied wallet is NOT used to
+    find the position — there's no reliable discovery for these, so
+    they always report their hardcoded known tokenIds regardless of
+    which wallet was queried. Only matters if this app is ever pointed
+    at a wallet other than DEFAULT_WALLET, which isn't the current use
+    case.
+
+    Returns ({"base": sickle_address_or_None, ...}, positions)."""
     all_positions = []
     sickle_addresses = {}
 
@@ -234,34 +241,33 @@ def fetch_all_positions(wallet: str):
             sickle_addresses[chain_key] = None
             continue
 
-        if chain_cfg["discovery"] == "dynamic":
+        if chain_cfg["sickle_resolution"] == "dynamic":
             sickle_address = va.resolve_sickle(w3, wallet)
-            sickle_addresses[chain_key] = sickle_address
-            if sickle_address is None:
-                continue
-            for protocol_key, cfg in chain_cfg["protocols"].items():
-                token_ids = va.discover_current_token_ids(w3, sickle_address, cfg["npm"])
-                for tid in token_ids:
-                    p = va.fetch_position(w3, tid, cfg["npm"], cfg["factory"], cfg["pool_abi"])
-                    p["chain"] = chain_key
-                    p["chain_label"] = chain_cfg["label"]
-                    p["protocol"] = protocol_key
-                    p["protocol_label"] = cfg["label"]
-                    all_positions.append(p)
+        else:
+            sickle_address = chain_cfg["fixed_sickle_address"]
+        sickle_addresses[chain_key] = sickle_address
 
-        elif chain_cfg["discovery"] == "known":
-            sickle_address = chain_cfg["known_sickle_address"]
-            sickle_addresses[chain_key] = sickle_address
-            for protocol_key, cfg in chain_cfg["protocols"].items():
-                known_ids = chain_cfg["known_token_ids"].get(protocol_key, [])
-                token_ids = va.check_known_token_ids(w3, sickle_address, cfg["npm"], known_ids)
-                for tid in token_ids:
-                    p = va.fetch_position(w3, tid, cfg["npm"], cfg["factory"], cfg["pool_abi"])
-                    p["chain"] = chain_key
-                    p["chain_label"] = chain_cfg["label"]
-                    p["protocol"] = protocol_key
-                    p["protocol_label"] = cfg["label"]
-                    all_positions.append(p)
+        for protocol_key, cfg in chain_cfg["protocols"].items():
+            discovery = cfg["discovery"]
+
+            if discovery == "dynamic":
+                if sickle_address is None:
+                    continue
+                token_ids = va.discover_current_token_ids(w3, sickle_address, cfg["npm"])
+            elif discovery == "known_owner_check":
+                token_ids = va.check_known_token_ids(w3, cfg["expected_owner"], cfg["npm"], cfg["known_token_ids"])
+            elif discovery == "known_exists_only":
+                token_ids = va.check_known_token_ids_exists_only(w3, cfg["npm"], cfg["known_token_ids"])
+            else:
+                raise ValueError(f"Unknown discovery mode: {discovery}")
+
+            for tid in token_ids:
+                p = cfg["fetch_fn"](w3, tid)
+                p["chain"] = chain_key
+                p["chain_label"] = chain_cfg["label"]
+                p["protocol"] = protocol_key
+                p["protocol_label"] = cfg["label"]
+                all_positions.append(p)
 
     return sickle_addresses, all_positions
 
