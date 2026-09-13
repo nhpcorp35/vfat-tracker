@@ -78,6 +78,13 @@ def get_w3(chain: str = "base"):
         if not ALCHEMY_BASE:
             return None
         w3 = Web3(Web3.HTTPProvider(ALCHEMY_BASE))
+    elif chain == "mainnet":
+        # Same Alchemy key as Base, different subdomain — confirmed
+        # working directly (debug_alchemy_eth.py), not assumed.
+        if not ALCHEMY_BASE or "base-mainnet" not in ALCHEMY_BASE:
+            return None
+        eth_url = ALCHEMY_BASE.replace("base-mainnet", "eth-mainnet")
+        w3 = Web3(Web3.HTTPProvider(eth_url))
     elif chain == "optimism":
         w3 = None
         for url in OPTIMISM_RPC_URLS:

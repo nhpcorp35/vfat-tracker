@@ -42,6 +42,10 @@ SICKLE_FACTORY = Web3.to_checksum_address("0x71D234A3e1dfC161cc1d081E6496e76627b
 # page, both agreeing exactly.
 OPTIMISM_UNISWAP_V3_NPM = Web3.to_checksum_address("0xC36442b4a4522E871399CD717aBDD847Ab11FE88")
 OPTIMISM_UNISWAP_V3_FACTORY = Web3.to_checksum_address("0x1F98431c8aD98523631AE4a59f267346ea31F984")
+# Same canonical cross-chain deployment as Optimism's — Uniswap V3 uses
+# this address on mainnet, Optimism, Polygon, and Arbitrum alike.
+MAINNET_UNISWAP_V3_NPM = OPTIMISM_UNISWAP_V3_NPM
+MAINNET_UNISWAP_V3_FACTORY = OPTIMISM_UNISWAP_V3_FACTORY
 
 # No verified SickleFactory address for Optimism, and no reliable
 # discovery mechanism either — Alchemy's enhanced APIs aren't available
@@ -57,6 +61,17 @@ OPTIMISM_UNISWAP_V3_FACTORY = Web3.to_checksum_address("0x1F98431c8aD98523631AE4
 OPTIMISM_SICKLE_ADDRESS = Web3.to_checksum_address("0x62aba0f25eb30993b577885b32c1b2a572000573")
 OPTIMISM_KNOWN_TOKEN_IDS = {
     "uniswap": [1126993],
+}
+
+# Ethereum mainnet: same story as Optimism — no verified SickleFactory
+# found (three different "SickleFactory"-source contracts turned up on
+# Etherscan; all three reverted on sickles() for this wallet, so none
+# of them is it). Rather than keep guessing, derived the Sickle address
+# directly: called ownerOf() on the known tokenId itself, which IS the
+# custody address — no factory resolution needed at all.
+MAINNET_SICKLE_ADDRESS = Web3.to_checksum_address("0x099Dc375859cD0c93125FfEde5158e276C01219f")
+MAINNET_KNOWN_TOKEN_IDS = {
+    "uniswap": [1357998],
 }
 
 # Both protocols confirmed empirically (not assumed) to hold their NFT
@@ -204,11 +219,16 @@ OPTIMISM_PROTOCOLS = {
                 "label": "Uniswap V3", "pool_abi": UNISWAP_POOL_ABI},
 }
 
+MAINNET_PROTOCOLS = {
+    "uniswap": {"npm": MAINNET_UNISWAP_V3_NPM, "factory": MAINNET_UNISWAP_V3_FACTORY,
+                "label": "Uniswap V3", "pool_abi": UNISWAP_POOL_ABI},
+}
+
 # Each chain's discovery method differs: Base resolves the Sickle
 # dynamically (SickleFactory) and discovers positions via Alchemy's
-# indexed API; Optimism has neither available, so both the Sickle
-# address and its position tokenIds are supplied directly (see the
-# OPTIMISM_SICKLE_ADDRESS / OPTIMISM_KNOWN_TOKEN_IDS comment above).
+# indexed API; Optimism and mainnet have no verified factory, so both
+# the Sickle address and its position tokenIds are supplied directly
+# (see the OPTIMISM_*/MAINNET_* comments above).
 CHAINS = {
     "base": {
         "label": "Base",
@@ -223,6 +243,14 @@ CHAINS = {
         "discovery": "known",
         "known_sickle_address": OPTIMISM_SICKLE_ADDRESS,
         "known_token_ids": OPTIMISM_KNOWN_TOKEN_IDS,
+    },
+    "mainnet": {
+        "label": "Ethereum",
+        "gecko_network": "eth",
+        "protocols": MAINNET_PROTOCOLS,
+        "discovery": "known",
+        "known_sickle_address": MAINNET_SICKLE_ADDRESS,
+        "known_token_ids": MAINNET_KNOWN_TOKEN_IDS,
     },
 }
 
