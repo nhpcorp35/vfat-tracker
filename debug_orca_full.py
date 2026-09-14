@@ -175,6 +175,16 @@ def main():
     print(f"lower liquidity_gross >= our liquidity? {lower_full['liquidity_gross'] >= liquidity}")
     print(f"upper liquidity_gross >= our liquidity? {upper_full['liquidity_gross'] >= liquidity}")
 
+    print(f"\n--- Byte-offset scan around lower tick (looking for plausible liquidity_gross, ~1e6-1e12 range) ---")
+    base = 44 + 1 * 113  # our assumed tick_offset for the lower tick
+    for probe_offset in range(max(0, base - 20), base + 40):
+        if probe_offset + 16 > len(raw_lower):
+            continue
+        val = u128_at(raw_lower, probe_offset)
+        if 10**6 < val < 10**12:
+            print(f"  offset {probe_offset} (base{probe_offset - base:+d}): {val}  <-- PLAUSIBLE")
+
+
     fg_inside_a, fg_inside_b = fee_growth_inside(
         tick_current, tick_lower, tick_upper, fg_global_a, fg_global_b,
         lower_out_a, lower_out_b, upper_out_a, upper_out_b,
