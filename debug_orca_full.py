@@ -149,6 +149,23 @@ def main():
         lower_out_a, lower_out_b, upper_out_a, upper_out_b,
     )
 
+    print(f"\n--- Fee growth diagnostic ---")
+    print(f"fg_global_a: {fg_global_a}")
+    print(f"fg_global_b: {fg_global_b}")
+    print(f"lower_out_a: {lower_out_a}, lower_out_b: {lower_out_b}")
+    print(f"upper_out_a: {upper_out_a}, upper_out_b: {upper_out_b}")
+    print(f"fg_inside_a: {fg_inside_a}")
+    print(f"fg_inside_b: {fg_inside_b}")
+    print(f"fee_growth_checkpoint_a (on Position): {fee_growth_checkpoint_a}")
+    print(f"fee_growth_checkpoint_b (on Position): {fee_growth_checkpoint_b}")
+    delta_a_raw = (fg_inside_a - fee_growth_checkpoint_a) % (2 ** 128)
+    delta_b_raw = (fg_inside_b - fee_growth_checkpoint_b) % (2 ** 128)
+    print(f"delta_a (mod 2^128): {delta_a_raw}")
+    print(f"delta_b (mod 2^128): {delta_b_raw}")
+    print(f"delta_a / 2^64 (should be small human-scale-ish): {delta_a_raw / Q64}")
+    print(f"delta_b / 2^64 (should be small human-scale-ish): {delta_b_raw / Q64}")
+    print(f"liquidity: {liquidity}")
+
     live_owed_a = fee_owed_a + liquidity * ((fg_inside_a - fee_growth_checkpoint_a) % (2 ** 128)) // Q64
     live_owed_b = fee_owed_b + liquidity * ((fg_inside_b - fee_growth_checkpoint_b) % (2 ** 128)) // Q64
 
