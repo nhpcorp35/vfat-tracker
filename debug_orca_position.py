@@ -76,7 +76,7 @@ def main():
     fee_growth_checkpoint_a = u128_at(raw, 96)
     fee_owed_a = u64_at(raw, 112)
     fee_growth_checkpoint_b = u128_at(raw, 120)
-    fee_owed_b = u64_at(raw, 128)
+    fee_owed_b = u64_at(raw, 136)
 
     print(f"\nwhirlpool: {whirlpool_addr}")
     print(f"position_mint: {position_mint} (matches input: {position_mint == POSITION_MINT})")
