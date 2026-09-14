@@ -246,6 +246,13 @@ UNISWAP_POOL_ABI = [
         "stateMutability": "view",
         "type": "function",
     },
+    {
+        "inputs": [],
+        "name": "liquidity",
+        "outputs": [{"internalType": "uint128", "name": "", "type": "uint128"}],
+        "stateMutability": "view",
+        "type": "function",
+    },
 ]
 
 # PancakeSwap V3's pool declares feeProtocol as uint32, not Uniswap's
@@ -368,6 +375,19 @@ AERODROME_POOL_ABI = [
             {"internalType": "uint32", "name": "secondsOutside", "type": "uint32"},
             {"internalType": "bool", "name": "initialized", "type": "bool"},
         ],
+        "stateMutability": "view",
+        "type": "function",
+    },
+    {
+        # Confirmed against ICLPoolState's own function list (found
+        # earlier tonight) as a getter distinct from stakedLiquidity()
+        # — should be the combined active total (staked + unstaked),
+        # same semantic as Uniswap/Pancake's liquidity(). Verifying
+        # against the real pool before trusting it, not assuming —
+        # Aerodrome has surprised us twice already tonight.
+        "inputs": [],
+        "name": "liquidity",
+        "outputs": [{"internalType": "uint128", "name": "", "type": "uint128"}],
         "stateMutability": "view",
         "type": "function",
     },
