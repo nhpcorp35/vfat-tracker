@@ -166,6 +166,9 @@ def main():
     lower_initialized, lower_out_a, lower_out_b = get_tick_fee_growth_outside(raw_lower, tick_lower, start_lower, tick_spacing)
     upper_initialized, upper_out_a, upper_out_b = get_tick_fee_growth_outside(raw_upper, tick_upper, start_upper, tick_spacing)
 
+    debug_scan_all_slots(raw_lower, start_lower, tick_spacing, f"raw_lower (start={start_lower})")
+    debug_scan_all_slots(raw_upper, start_upper, tick_spacing, f"raw_upper (start={start_upper})")
+
     print(f"\n--- Slot alignment check ---")
     print(f"tick_lower={tick_lower}, tick_upper={tick_upper}, tick_spacing={tick_spacing}")
     print(f"start_lower={start_lower}, start_upper={start_upper}")
@@ -231,6 +234,26 @@ def main():
     print(f"Live uncollected fees: {live_fee_a:.8f} SOL + {live_fee_b:.6f} USDC")
     print(f"\nEstimated value at price {price:.2f}: {amount_a * price + amount_b:.2f} USD (compare to screenshot's $19.57)")
     print(f"Estimated fee value: {live_fee_a * price + live_fee_b:.4f} USD (compare to screenshot's $0.44)")
+
+
+def debug_scan_all_slots(raw, start_tick, tick_spacing, label):
+    print(f"\n--- Full slot scan: {label} ---")
+    init_count = 0
+    for slot in range(88):
+        off = 44 + slot * 113
+        initialized = raw[off] != 0
+        if initialized:
+            init_count += 1
+            lg = u128_at(raw, off + 1 + 16)
+            fg_a = u128_at(raw, off + 1 + 16 + 16)
+            implied_tick = start_tick + slot * tick_spacing
+            print(f"  slot {slot} (tick {implied_tick}): INITIALIZED, liquidity_gross={lg}, fee_growth_outside_a={fg_a}")
+    print(f"Total initialized slots: {init_count} / 88")
+    print("Raw fee_growth_outside_a for first 5 slots (regardless of initialized):")
+    for slot in range(5):
+        off = 44 + slot * 113
+        fg_a = u128_at(raw, off + 1 + 16 + 16)
+        print(f"  slot {slot}: fee_growth_outside_a={fg_a}")
 
 
 if __name__ == "__main__":
