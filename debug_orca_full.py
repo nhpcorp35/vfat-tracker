@@ -184,6 +184,22 @@ def main():
             print(f"  slot {slot} (implied tick_index={implied_tick}): initialized=True, liquidity_gross={lg}")
     print("(expected our tick -23932 at slot 1 -- if absent, formula-vs-reality mismatch confirmed)")
 
+    print(f"\n--- Brute-force byte search: any offset where a u128 read is within 10x of our own liquidity ({liquidity}) ---")
+    found_any = False
+    for off in range(0, len(raw_lower) - 16):
+        val = u128_at(raw_lower, off)
+        if liquidity * 0.5 < val < liquidity * 50:
+            print(f"  RAW byte offset {off}: {val}")
+            found_any = True
+    if not found_any:
+        print("  NONE found anywhere in the account — our liquidity may not appear as a raw stored value at all")
+        print("  (expected, actually: liquidity_gross is a SUM across positions, not necessarily close to just ours)")
+
+    print(f"\n--- Raw hex dump, first 300 bytes (discriminator + header + first ~2 ticks) ---")
+    print(raw_lower[:300].hex())
+
+
+
 
     lower_full = get_tick_full(raw_lower, tick_lower, start_lower, tick_spacing)
     upper_full = get_tick_full(raw_upper, tick_upper, start_upper, tick_spacing)
