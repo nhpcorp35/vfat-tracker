@@ -63,6 +63,28 @@ def derive_tick_array_pda(whirlpool, start_tick_index):
     return pda
 
 
+def get_tick_full(tick_array_raw, tick_index, start_tick_index, tick_spacing):
+    """Full Tick struct — same layout as get_tick_fee_growth_outside, but
+    returns everything (including liquidity_net/gross, which come BEFORE
+    the fee fields) so we can sanity-check the offset math against a
+    field we have independent grounds to expect: liquidity_gross should
+    be >= our own position's liquidity if this tick was initialized when
+    we opened."""
+    offset_in_array = (tick_index - start_tick_index) // tick_spacing
+    tick_offset = 44 + offset_in_array * 113
+    initialized = bool(tick_array_raw[tick_offset])
+    liquidity_net = i128_at(tick_array_raw, tick_offset + 1)
+    liquidity_gross = u128_at(tick_array_raw, tick_offset + 1 + 16)
+    fg_a = u128_at(tick_array_raw, tick_offset + 1 + 16 + 16)
+    fg_b = u128_at(tick_array_raw, tick_offset + 1 + 16 + 16 + 16)
+    return {
+        "offset_in_array": offset_in_array, "byte_offset": tick_offset,
+        "initialized": initialized, "liquidity_net": liquidity_net,
+        "liquidity_gross": liquidity_gross,
+        "fee_growth_outside_a": fg_a, "fee_growth_outside_b": fg_b,
+    }
+
+
 def get_tick_fee_growth_outside(tick_array_raw, tick_index, start_tick_index, tick_spacing):
     """Tick struct: initialized(1) + liquidity_net i128(16) + liquidity_gross u128(16)
     + fee_growth_outside_a u128(16) + fee_growth_outside_b u128(16) + reward_growths_outside[3] u128(48)
@@ -143,6 +165,15 @@ def main():
 
     lower_out_a, lower_out_b = get_tick_fee_growth_outside(raw_lower, tick_lower, start_lower, tick_spacing)
     upper_out_a, upper_out_b = get_tick_fee_growth_outside(raw_upper, tick_upper, start_upper, tick_spacing)
+
+    print(f"\n--- Full tick data ---")
+    print(f"our position liquidity: {liquidity}")
+    lower_full = get_tick_full(raw_lower, tick_lower, start_lower, tick_spacing)
+    upper_full = get_tick_full(raw_upper, tick_upper, start_upper, tick_spacing)
+    print(f"lower tick full: {lower_full}")
+    print(f"upper tick full: {upper_full}")
+    print(f"lower liquidity_gross >= our liquidity? {lower_full['liquidity_gross'] >= liquidity}")
+    print(f"upper liquidity_gross >= our liquidity? {upper_full['liquidity_gross'] >= liquidity}")
 
     fg_inside_a, fg_inside_b = fee_growth_inside(
         tick_current, tick_lower, tick_upper, fg_global_a, fg_global_b,
