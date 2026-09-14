@@ -174,6 +174,17 @@ def main():
     print(f"computed start_lower: {start_lower}, ACTUALLY STORED: {stored_start_lower}, match: {start_lower == stored_start_lower}")
     print(f"computed start_upper: {start_upper}, ACTUALLY STORED: {stored_start_upper}, match: {start_upper == stored_start_upper}")
 
+    print(f"\n--- Scanning ALL 88 slots in lower tick array for the real initialized tick ---")
+    for slot in range(88):
+        slot_offset = 44 + slot * 113
+        init_byte = raw_lower[slot_offset]
+        if init_byte == 1:
+            lg = u128_at(raw_lower, slot_offset + 1 + 16)
+            implied_tick = start_lower + slot * tick_spacing
+            print(f"  slot {slot} (implied tick_index={implied_tick}): initialized=True, liquidity_gross={lg}")
+    print("(expected our tick -23932 at slot 1 -- if absent, formula-vs-reality mismatch confirmed)")
+
+
     lower_full = get_tick_full(raw_lower, tick_lower, start_lower, tick_spacing)
     upper_full = get_tick_full(raw_upper, tick_upper, start_upper, tick_spacing)
     print(f"lower tick full: {lower_full}")
