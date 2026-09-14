@@ -328,7 +328,20 @@ def capture_snapshot():
             baseline_value_usd = prior.get("baseline_value_usd")
             baseline_fees_usd = prior.get("baseline_fees_usd")
             baseline_ts = prior.get("baseline_ts")
-            if baseline_value_usd is None and p["position_value_usd"] is not None:
+
+            # A deposit or withdrawal on an existing position (rebalance,
+            # increase/decrease liquidity) changes on-chain liquidity —
+            # detected exactly, since it's a uint128, not a float. Without
+            # this, added capital reads as a huge fake "gain" (value jumps
+            # but baseline doesn't), and a withdrawal reads as a fake
+            # "loss" the same way. Reset the baseline when it happens —
+            # P&L becomes "since this capital level," not true lifetime
+            # cash-flow-adjusted P&L, but that's a much smaller gap than
+            # miscounting your own deposits as returns.
+            prior_liquidity = prior.get("last_liquidity")
+            liquidity_changed = prior_liquidity is not None and p["liquidity"] != prior_liquidity
+
+            if (baseline_value_usd is None or liquidity_changed) and p["position_value_usd"] is not None:
                 baseline_value_usd = p["position_value_usd"]
                 baseline_fees_usd = p["uncollected_fees_usd"] or 0.0
                 baseline_ts = now
@@ -338,6 +351,7 @@ def capture_snapshot():
                 "token_id": p["token_id"],
                 "pool": f"{p['token0']['symbol']}/{p['token1']['symbol']}",
                 "pool_address": p["pool_address"],
+                "last_liquidity": p["liquidity"],
                 "baseline_value_usd": baseline_value_usd,
                 "baseline_fees_usd": baseline_fees_usd,
                 "baseline_ts": baseline_ts,
