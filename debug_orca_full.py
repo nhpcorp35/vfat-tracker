@@ -151,11 +151,17 @@ def main():
     start_upper = tick_array_start_index(tick_upper, tick_spacing)
     pda_lower = derive_tick_array_pda(Pubkey.from_string(whirlpool_addr), start_lower)
     pda_upper = derive_tick_array_pda(Pubkey.from_string(whirlpool_addr), start_upper)
+    print(f"\npda_lower: {pda_lower}")
+    print(f"pda_upper: {pda_upper}")
 
     if str(pda_lower) == str(pda_upper):
         raw_lower = raw_upper = get_account_bytes(str(pda_lower))
     else:
         raw_lower, raw_upper = get_multiple_accounts([str(pda_lower), str(pda_upper)])
+    print(f"raw_lower is raw_upper (same object)? {raw_lower is raw_upper}")
+    print(f"raw_lower == raw_upper (same bytes)? {raw_lower == raw_upper}")
+    print(f"raw_lower[0:16] hex: {raw_lower[:16].hex()}")
+    print(f"raw_upper[0:16] hex: {raw_upper[:16].hex()}")
 
     lower_initialized, lower_out_a, lower_out_b = get_tick_fee_growth_outside(raw_lower, tick_lower, start_lower, tick_spacing)
     upper_initialized, upper_out_a, upper_out_b = get_tick_fee_growth_outside(raw_upper, tick_upper, start_upper, tick_spacing)
