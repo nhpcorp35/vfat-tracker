@@ -14,7 +14,7 @@ from solders.pubkey import Pubkey
 
 RPC_URL = os.environ.get("SOLANA_RPC", "https://api.mainnet-beta.solana.com")
 WHIRLPOOL_PROGRAM = Pubkey.from_string("whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc")
-POSITION_MINT = "6eeinqbDCX1sHJPuuAqs6Rzs71v2CGCbESJGvXP68UnL"
+POSITION_MINT = "CsezH1MBuFYece5kyFm2bTAoJMYEfdEs1yGJwsbzNGnG"  # NEW fresh test position
 TICK_ARRAY_SIZE = 88
 Q64 = 2 ** 64
 
