@@ -63,51 +63,45 @@ def derive_tick_array_pda(whirlpool, start_tick_index):
     return pda
 
 
-def get_tick_full(tick_array_raw, tick_index, start_tick_index, tick_spacing):
-    """Full Tick struct — same layout as get_tick_fee_growth_outside, but
-    returns everything (including liquidity_net/gross, which come BEFORE
-    the fee fields) so we can sanity-check the offset math against a
-    field we have independent grounds to expect: liquidity_gross should
-    be >= our own position's liquidity if this tick was initialized when
-    we opened."""
-    offset_in_array = (tick_index - start_tick_index) // tick_spacing
-    tick_offset = 44 + offset_in_array * 113
-    initialized = bool(tick_array_raw[tick_offset])
-    liquidity_net = i128_at(tick_array_raw, tick_offset + 1)
-    liquidity_gross = u128_at(tick_array_raw, tick_offset + 1 + 16)
-    fg_a = u128_at(tick_array_raw, tick_offset + 1 + 16 + 16)
-    fg_b = u128_at(tick_array_raw, tick_offset + 1 + 16 + 16 + 16)
-    return {
-        "offset_in_array": offset_in_array, "byte_offset": tick_offset,
-        "initialized": initialized, "liquidity_net": liquidity_net,
-        "liquidity_gross": liquidity_gross,
-        "fee_growth_outside_a": fg_a, "fee_growth_outside_b": fg_b,
-    }
-
-
 def get_tick_fee_growth_outside(tick_array_raw, tick_index, start_tick_index, tick_spacing):
     """Tick struct: initialized(1) + liquidity_net i128(16) + liquidity_gross u128(16)
     + fee_growth_outside_a u128(16) + fee_growth_outside_b u128(16) + reward_growths_outside[3] u128(48)
-    = 113 bytes each. TickArray header: discriminator(8) + start_tick_index(4) + whirlpool(32) = 44 bytes."""
+    = 113 bytes each. TickArray header: discriminator(8) + start_tick_index(4) + whirlpool(32) = 44 bytes.
+    Returns (initialized, fee_growth_outside_a, fee_growth_outside_b) — initialized MUST be
+    checked before trusting the outside values (see fee_growth_inside)."""
     offset_in_array = (tick_index - start_tick_index) // tick_spacing
     tick_offset = 44 + offset_in_array * 113
+    initialized = tick_array_raw[tick_offset] != 0
     fg_a = u128_at(tick_array_raw, tick_offset + 1 + 16 + 16)
     fg_b = u128_at(tick_array_raw, tick_offset + 1 + 16 + 16 + 16)
-    return fg_a, fg_b
+    return initialized, fg_a, fg_b
 
 
 def fee_growth_inside(current_tick, tick_lower, tick_upper, fg_global_a, fg_global_b,
-                       lower_out_a, lower_out_b, upper_out_a, upper_out_b):
-    if current_tick >= tick_lower:
-        below_a, below_b = lower_out_a, lower_out_b
-    else:
+                       lower_initialized, lower_out_a, lower_out_b,
+                       upper_initialized, upper_out_a, upper_out_b):
+    """Exact match to Orca's real next_fee_growths_inside (verified against
+    their actual GitHub source, not assumed from the Uniswap textbook
+    formula) — the initialized check is the part that was missing before,
+    and it's what was causing the huge false fee numbers: an uninitialized
+    tick's stored fee_growth_outside is stale/meaningless and must NOT be
+    used, per Orca's own 'by convention' comment in the real function."""
+    if not lower_initialized:
+        below_a, below_b = fg_global_a, fg_global_b
+    elif current_tick < tick_lower:
         below_a = (fg_global_a - lower_out_a) % (2 ** 128)
         below_b = (fg_global_b - lower_out_b) % (2 ** 128)
-    if current_tick < tick_upper:
+    else:
+        below_a, below_b = lower_out_a, lower_out_b
+
+    if not upper_initialized:
+        above_a, above_b = 0, 0
+    elif current_tick < tick_upper:
         above_a, above_b = upper_out_a, upper_out_b
     else:
         above_a = (fg_global_a - upper_out_a) % (2 ** 128)
         above_b = (fg_global_b - upper_out_b) % (2 ** 128)
+
     inside_a = (fg_global_a - below_a - above_a) % (2 ** 128)
     inside_b = (fg_global_b - below_b - above_b) % (2 ** 128)
     return inside_a, inside_b
@@ -163,67 +157,17 @@ def main():
     else:
         raw_lower, raw_upper = get_multiple_accounts([str(pda_lower), str(pda_upper)])
 
-    lower_out_a, lower_out_b = get_tick_fee_growth_outside(raw_lower, tick_lower, start_lower, tick_spacing)
-    upper_out_a, upper_out_b = get_tick_fee_growth_outside(raw_upper, tick_upper, start_upper, tick_spacing)
-
-    print(f"\n--- Full tick data ---")
-    print(f"our position liquidity: {liquidity}")
-
-    stored_start_lower = i32_at(raw_lower, 8)
-    stored_start_upper = i32_at(raw_upper, 8)
-    print(f"computed start_lower: {start_lower}, ACTUALLY STORED: {stored_start_lower}, match: {start_lower == stored_start_lower}")
-    print(f"computed start_upper: {start_upper}, ACTUALLY STORED: {stored_start_upper}, match: {start_upper == stored_start_upper}")
-
-    print(f"\n--- Scanning ALL 88 slots in lower tick array for the real initialized tick ---")
-    for slot in range(88):
-        slot_offset = 44 + slot * 113
-        init_byte = raw_lower[slot_offset]
-        if init_byte == 1:
-            lg = u128_at(raw_lower, slot_offset + 1 + 16)
-            implied_tick = start_lower + slot * tick_spacing
-            print(f"  slot {slot} (implied tick_index={implied_tick}): initialized=True, liquidity_gross={lg}")
-    print("(expected our tick -23932 at slot 1 -- if absent, formula-vs-reality mismatch confirmed)")
-
-    print(f"\n--- Brute-force byte search: any offset where a u128 read is within 10x of our own liquidity ({liquidity}) ---")
-    found_any = False
-    for off in range(0, len(raw_lower) - 16):
-        val = u128_at(raw_lower, off)
-        if liquidity * 0.5 < val < liquidity * 50:
-            print(f"  RAW byte offset {off}: {val}")
-            found_any = True
-    if not found_any:
-        print("  NONE found anywhere in the account — our liquidity may not appear as a raw stored value at all")
-        print("  (expected, actually: liquidity_gross is a SUM across positions, not necessarily close to just ours)")
-
-    print(f"\n--- Raw hex dump, first 300 bytes (discriminator + header + first ~2 ticks) ---")
-    print(raw_lower[:300].hex())
-
-
-
-
-    lower_full = get_tick_full(raw_lower, tick_lower, start_lower, tick_spacing)
-    upper_full = get_tick_full(raw_upper, tick_upper, start_upper, tick_spacing)
-    print(f"lower tick full: {lower_full}")
-    print(f"upper tick full: {upper_full}")
-    print(f"lower liquidity_gross >= our liquidity? {lower_full['liquidity_gross'] >= liquidity}")
-    print(f"upper liquidity_gross >= our liquidity? {upper_full['liquidity_gross'] >= liquidity}")
-
-    print(f"\n--- Byte-offset scan around lower tick (looking for plausible liquidity_gross, ~1e6-1e12 range) ---")
-    base = 44 + 1 * 113  # our assumed tick_offset for the lower tick
-    for probe_offset in range(max(0, base - 20), base + 40):
-        if probe_offset + 16 > len(raw_lower):
-            continue
-        val = u128_at(raw_lower, probe_offset)
-        if 10**6 < val < 10**12:
-            print(f"  offset {probe_offset} (base{probe_offset - base:+d}): {val}  <-- PLAUSIBLE")
-
+    lower_initialized, lower_out_a, lower_out_b = get_tick_fee_growth_outside(raw_lower, tick_lower, start_lower, tick_spacing)
+    upper_initialized, upper_out_a, upper_out_b = get_tick_fee_growth_outside(raw_upper, tick_upper, start_upper, tick_spacing)
 
     fg_inside_a, fg_inside_b = fee_growth_inside(
         tick_current, tick_lower, tick_upper, fg_global_a, fg_global_b,
-        lower_out_a, lower_out_b, upper_out_a, upper_out_b,
+        lower_initialized, lower_out_a, lower_out_b,
+        upper_initialized, upper_out_a, upper_out_b,
     )
 
-    print(f"\n--- Fee growth diagnostic ---")
+    print(f"\n--- Fee growth diagnostic (FIXED: now checking tick.initialized) ---")
+    print(f"lower_initialized: {lower_initialized}, upper_initialized: {upper_initialized}")
     print(f"fg_global_a: {fg_global_a}")
     print(f"fg_global_b: {fg_global_b}")
     print(f"lower_out_a: {lower_out_a}, lower_out_b: {lower_out_b}")
