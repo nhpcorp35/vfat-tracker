@@ -170,6 +170,11 @@ def main():
     stored_start_upper_in_account = i32_at(raw_upper, 8)
     print(f"start_tick_index actually stored in lower tick array account: {stored_start_lower_in_account} (expect {start_lower})")
     print(f"start_tick_index actually stored in upper tick array account: {stored_start_upper_in_account} (expect {start_upper})")
+    DYNAMIC_TICK_ARRAY_DISCRIMINATOR = bytes([17, 216, 246, 142, 225, 199, 218, 56])
+    print(f"lower tick array account size: {len(raw_lower)} bytes (expect 9988 for Fixed)")
+    print(f"upper tick array account size: {len(raw_upper)} bytes (expect 9988 for Fixed)")
+    print(f"lower discriminator: {list(raw_lower[:8])}, is Dynamic: {raw_lower[:8] == DYNAMIC_TICK_ARRAY_DISCRIMINATOR}")
+    print(f"upper discriminator: {list(raw_upper[:8])}, is Dynamic: {raw_upper[:8] == DYNAMIC_TICK_ARRAY_DISCRIMINATOR}")
 
     fg_inside_a, fg_inside_b = fee_growth_inside(
         tick_current, tick_lower, tick_upper, fg_global_a, fg_global_b,
