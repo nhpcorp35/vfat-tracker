@@ -168,6 +168,12 @@ def main():
 
     print(f"\n--- Full tick data ---")
     print(f"our position liquidity: {liquidity}")
+
+    stored_start_lower = i32_at(raw_lower, 8)
+    stored_start_upper = i32_at(raw_upper, 8)
+    print(f"computed start_lower: {start_lower}, ACTUALLY STORED: {stored_start_lower}, match: {start_lower == stored_start_lower}")
+    print(f"computed start_upper: {start_upper}, ACTUALLY STORED: {stored_start_upper}, match: {start_upper == stored_start_upper}")
+
     lower_full = get_tick_full(raw_lower, tick_lower, start_lower, tick_spacing)
     upper_full = get_tick_full(raw_upper, tick_upper, start_upper, tick_spacing)
     print(f"lower tick full: {lower_full}")
