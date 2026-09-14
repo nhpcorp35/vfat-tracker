@@ -566,6 +566,7 @@ def fetch_position(w3, token_id: int, npm_address: str = UNISWAP_V3_NPM, factory
     slot0 = pool.functions.slot0().call()
     sqrt_price_x96, current_tick = slot0[0], slot0[1]
     sqrt_price = sqrt_price_x96 / (2 ** 96)
+    pool_active_liquidity = pool.functions.liquidity().call()
 
     fee_growth_global0 = pool.functions.feeGrowthGlobal0X128().call()
     fee_growth_global1 = pool.functions.feeGrowthGlobal1X128().call()
@@ -608,6 +609,7 @@ def fetch_position(w3, token_id: int, npm_address: str = UNISWAP_V3_NPM, factory
         "current_tick": current_tick,
         "in_range": in_range,
         "liquidity": liquidity,
+        "pool_active_liquidity": pool_active_liquidity,
         "amount0": amt0_raw / (10 ** dec0),
         "amount1": amt1_raw / (10 ** dec1),
         "current_price": current_price,
@@ -681,6 +683,7 @@ def fetch_position_aerodrome(w3, token_id: int, sickle_address: str = None) -> d
     sqrt_price_x96, current_tick = slot0[0], slot0[1]
     sqrt_price = sqrt_price_x96 / (2 ** 96)
     dynamic_fee = pool.functions.fee().call()
+    pool_active_liquidity = pool.functions.liquidity().call()
 
     fee_growth_global0 = pool.functions.feeGrowthGlobal0X128().call()
     fee_growth_global1 = pool.functions.feeGrowthGlobal1X128().call()
@@ -749,6 +752,7 @@ def fetch_position_aerodrome(w3, token_id: int, sickle_address: str = None) -> d
         "current_tick": current_tick,
         "in_range": in_range,
         "liquidity": liquidity,
+        "pool_active_liquidity": pool_active_liquidity,
         "amount0": amt0_raw / (10 ** dec0),
         "amount1": amt1_raw / (10 ** dec1),
         "current_price": current_price,

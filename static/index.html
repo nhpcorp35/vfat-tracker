@@ -214,6 +214,7 @@ function renderPositions(positions) {
     const pnl = fmtPnl(p.pnl_usd, p.pnl_pct);
     const pnlLine = pnl ? `<div class="pnl-sub ${pnl.cls}">${pnl.text}</div>` : '';
     const aprLine = (p.apr_pct === null || p.apr_pct === undefined) ? '—' : fmtPct(p.apr_pct, 1);
+    const estAprLine = (p.estimated_apr_pct === null || p.estimated_apr_pct === undefined) ? '—' : fmtPct(p.estimated_apr_pct, 1);
     const rewardsRow = p.is_staked
       ? `<div class="fees-row rewards-row">
            <span class="fees-label">Pending ${p.reward_token_symbol || 'Reward'}</span>
@@ -240,6 +241,10 @@ function renderPositions(positions) {
             <div class="stat-label">Range Width</div>
             <div class="stat-value">${fmtPct(p.range_width_pct, 1)}</div>
             <div class="stat-value dim" style="margin-top:2px;">[${p.tick_lower}, ${p.tick_upper}]</div>
+          </div>
+          <div>
+            <div class="stat-label">Est. APR (pool activity)</div>
+            <div class="stat-value">${estAprLine}</div>
           </div>
           <div>
             <div class="stat-label">APR (since tracked)</div>

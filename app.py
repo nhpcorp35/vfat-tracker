@@ -477,6 +477,52 @@ def compute_portfolio_summary(positions: list) -> dict:
     }
 
 
+def attach_estimated_apr(positions: list) -> list:
+    """Estimates APR from CURRENT pool activity — most recent day's
+    volume × fee rate × your share of the pool's active liquidity —
+    rather than your own fee accrual since a baseline. Available
+    immediately (no 12-hour wait for 'APR (since tracked)' to become
+    meaningful), same approach vfat's own UI uses to preview APR
+    before you've even deposited. Not a promise of future returns:
+    pool volume varies day to day, sometimes a lot.
+
+    Dedupes by pool_address within one call — positions sharing a pool
+    (e.g. two Aerodrome positions in the same WETH/USDC pool) only
+    trigger one volume fetch, not one each. GeckoTerminal's own
+    30-minute cache on get_pool_volume_usd() covers reuse across
+    separate requests on top of that."""
+    volume_cache_this_call = {}
+    for p in positions:
+        if not p["in_range"]:
+            p["estimated_apr_pct"] = 0.0
+            continue
+        if not p.get("pool_active_liquidity") or not p.get("position_value_usd"):
+            p["estimated_apr_pct"] = None
+            continue
+
+        cache_key = (p["chain"], p["pool_address"].lower())
+        if cache_key not in volume_cache_this_call:
+            gecko_network = va.CHAINS[p["chain"]]["gecko_network"]
+            try:
+                candles = get_pool_volume_usd(p["pool_address"], 1, gecko_network)
+                volume_cache_this_call[cache_key] = candles[-1]["volume_usd"] if candles else None
+            except Exception as e:
+                app.logger.warning("Pool volume fetch failed for estimated APR (%s): %s", p["pool_address"], e)
+                volume_cache_this_call[cache_key] = None
+
+        daily_volume_usd = volume_cache_this_call[cache_key]
+        if daily_volume_usd is None:
+            p["estimated_apr_pct"] = None
+            continue
+
+        fee_fraction = p["fee_tier"] / 1_000_000
+        daily_pool_fees_usd = daily_volume_usd * fee_fraction
+        share = p["liquidity"] / p["pool_active_liquidity"]
+        your_daily_fees_usd = daily_pool_fees_usd * share
+        p["estimated_apr_pct"] = (your_daily_fees_usd / p["position_value_usd"]) * 365 * 100
+    return positions
+
+
 def attach_pnl_and_apr(positions: list) -> list:
     """Read-only — the background snapshot loop is the sole writer of
     known_positions.json, avoiding two code paths racing on the same
@@ -551,6 +597,7 @@ def api_positions():
         sickle_addresses, positions = fetch_all_positions(wallet)
         positions = enrich_with_usd(positions)
         positions = attach_pnl_and_apr(positions)
+        positions = attach_estimated_apr(positions)
     except Exception as e:
         app.logger.error("Position fetch failed for %s: %s", wallet, e)
         stale = _stale_cache.get(cache_key)
