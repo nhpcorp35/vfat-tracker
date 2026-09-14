@@ -160,6 +160,17 @@ def main():
     lower_initialized, lower_out_a, lower_out_b = get_tick_fee_growth_outside(raw_lower, tick_lower, start_lower, tick_spacing)
     upper_initialized, upper_out_a, upper_out_b = get_tick_fee_growth_outside(raw_upper, tick_upper, start_upper, tick_spacing)
 
+    print(f"\n--- Slot alignment check ---")
+    print(f"tick_lower={tick_lower}, tick_upper={tick_upper}, tick_spacing={tick_spacing}")
+    print(f"start_lower={start_lower}, start_upper={start_upper}")
+    offset_lower = (tick_lower - start_lower) // tick_spacing
+    offset_upper = (tick_upper - start_upper) // tick_spacing
+    print(f"offset_in_array: lower={offset_lower}, upper={offset_upper} (must be 0-87)")
+    stored_start_lower_in_account = i32_at(raw_lower, 8)
+    stored_start_upper_in_account = i32_at(raw_upper, 8)
+    print(f"start_tick_index actually stored in lower tick array account: {stored_start_lower_in_account} (expect {start_lower})")
+    print(f"start_tick_index actually stored in upper tick array account: {stored_start_upper_in_account} (expect {start_upper})")
+
     fg_inside_a, fg_inside_b = fee_growth_inside(
         tick_current, tick_lower, tick_upper, fg_global_a, fg_global_b,
         lower_initialized, lower_out_a, lower_out_b,
