@@ -354,7 +354,7 @@ function renderPositionHistoryChart(tokenId, canvas, snapshots) {
   const withValue = snapshots.filter(s => s.value_usd !== undefined && s.value_usd !== null);
 
   if (!withValue.length) {
-    if (positionChartInstances[tokenId]) { positionChartInstances[tokenId].destroy(); positionChartInstances[tokenId] = null; }
+    const c = Chart.getChart(canvas); if (c) c.destroy();
     canvas.style.display = 'none';
     let msg = existingMsg;
     if (!msg) { msg = document.createElement('div'); msg.className = 'history-empty'; wrap.appendChild(msg); }
@@ -367,7 +367,7 @@ function renderPositionHistoryChart(tokenId, canvas, snapshots) {
   const labels = withValue.map(s => new Date(s.ts * 1000));
   const values = withValue.map(s => s.value_usd);
 
-  if (positionChartInstances[tokenId]) positionChartInstances[tokenId].destroy();
+  const existingChart = Chart.getChart(canvas); if (existingChart) existingChart.destroy();
   positionChartInstances[tokenId] = new Chart(canvas, {
     type: 'line',
     data: { labels, datasets: [{ label: 'Position Value (USD)', data: values, borderColor: '#4a9eff',
@@ -406,7 +406,7 @@ function renderPositionVolumeChart(tokenId, canvas, candles) {
   const wrap = canvas.parentElement;
   const existingMsg = wrap.querySelector('.volume-empty');
   if (!candles.length) {
-    if (positionVolumeChartInstances[tokenId]) { positionVolumeChartInstances[tokenId].destroy(); positionVolumeChartInstances[tokenId] = null; }
+    const cv = Chart.getChart(canvas); if (cv) cv.destroy();
     canvas.style.display = 'none';
     let msg = existingMsg;
     if (!msg) { msg = document.createElement('div'); msg.className = 'history-empty volume-empty'; wrap.appendChild(msg); }
@@ -419,7 +419,7 @@ function renderPositionVolumeChart(tokenId, canvas, candles) {
   const labels = candles.map(c => new Date(c.ts * 1000));
   const values = candles.map(c => c.volume_usd);
 
-  if (positionVolumeChartInstances[tokenId]) positionVolumeChartInstances[tokenId].destroy();
+  const existingVolumeChart = Chart.getChart(canvas); if (existingVolumeChart) existingVolumeChart.destroy();
   positionVolumeChartInstances[tokenId] = new Chart(canvas, {
     type: 'bar',
     data: { labels, datasets: [{ label: 'Pool Volume (USD)', data: values, backgroundColor: 'rgba(32,210,208,0.35)', borderColor: 'rgba(32,210,208,0.6)', borderWidth: 1 }] },
