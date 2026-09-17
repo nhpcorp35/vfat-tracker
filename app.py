@@ -360,17 +360,36 @@ def capture_snapshot():
             prior_liquidity = prior.get("last_liquidity")
             liquidity_changed = prior_liquidity is not None and p["liquidity"] != prior_liquidity
 
+            reset_applied = False
             if (baseline_value_usd is None or liquidity_changed) and p["position_value_usd"] is not None:
                 baseline_value_usd = p["position_value_usd"]
                 baseline_fees_usd = p["uncollected_fees_usd"] or 0.0
                 baseline_ts = now
+                reset_applied = True
+
+            # Real bug found and fixed here: last_liquidity used to
+            # advance every cycle regardless of whether a detected
+            # change actually got applied. If a deposit landed on the
+            # same cycle as a price-fetch failure (not rare — Gecko-
+            # Terminal rate-limits happen often), the reset was
+            # silently skipped (needs position_value_usd), but the
+            # comparison point still moved to the new liquidity — so
+            # the next cycle compared new-vs-new and saw no change,
+            # permanently missing the reset. Confirmed as the real
+            # cause of a stale baseline on a live position. Only
+            # advance last_liquidity when there was nothing to reconcile,
+            # or when the reconciliation actually happened — otherwise
+            # keep retrying against the old value until a cycle
+            # succeeds with real price data.
+            next_liquidity = prior_liquidity if (liquidity_changed and not reset_applied) else p["liquidity"]
+
             known[key] = {
                 "chain": p["chain"],
                 "protocol": p["protocol"],
                 "token_id": p["token_id"],
                 "pool": f"{p['token0']['symbol']}/{p['token1']['symbol']}",
                 "pool_address": p["pool_address"],
-                "last_liquidity": p["liquidity"],
+                "last_liquidity": next_liquidity,
                 "baseline_value_usd": baseline_value_usd,
                 "baseline_fees_usd": baseline_fees_usd,
                 "baseline_ts": baseline_ts,
