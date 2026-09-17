@@ -666,7 +666,7 @@ def api_debug_reset_baseline(pos_key):
     if not wallet:
         return jsonify({"error": "No wallet configured"}), 400
     try:
-        positions = fetch_all_positions(wallet)
+        _, positions = fetch_all_positions(wallet)
         positions = enrich_with_usd(positions)
     except Exception as e:
         return jsonify({"error": f"Failed to fetch current positions: {e}"}), 500
