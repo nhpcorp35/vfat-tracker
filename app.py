@@ -655,6 +655,46 @@ def api_debug_baseline(pos_key):
     })
 
 
+@app.route("/api/debug/reset-baseline/<path:pos_key>", methods=["POST"])
+def api_debug_reset_baseline(pos_key):
+    """Read-write diagnostic — resets one position's stored baseline to
+    its current live value. For a baseline that was captured wrong (a
+    since-fixed pricing bug at the time, not a missed deposit — the
+    normal liquidity-change reset already covers real deposits), this
+    is the correction path. Same auth as everything else."""
+    wallet = request.args.get("wallet", "").strip() or DEFAULT_WALLET
+    if not wallet:
+        return jsonify({"error": "No wallet configured"}), 400
+    try:
+        positions = fetch_all_positions(wallet)
+        positions = enrich_with_usd(positions)
+    except Exception as e:
+        return jsonify({"error": f"Failed to fetch current positions: {e}"}), 500
+
+    match = next((p for p in positions if f"{p['chain']}:{p['protocol']}:{p['token_id']}" == pos_key), None)
+    if match is None:
+        return jsonify({"error": f"No live position found matching {pos_key}"}), 404
+    if match.get("position_value_usd") is None:
+        return jsonify({"error": "Live position has no current USD value yet"}), 409
+
+    with _history_lock:
+        known = _read_json_locked(_known_positions_file_path(), {})
+        entry = known.get(pos_key, {})
+        old_baseline = entry.get("baseline_value_usd")
+        entry["baseline_value_usd"] = match["position_value_usd"]
+        entry["baseline_fees_usd"] = match.get("uncollected_fees_usd") or 0.0
+        entry["baseline_ts"] = time.time()
+        entry["last_liquidity"] = match["liquidity"]
+        known[pos_key] = entry
+        _write_json_locked(_known_positions_file_path(), known)
+
+    return jsonify({
+        "key": pos_key,
+        "old_baseline_value_usd": old_baseline,
+        "new_baseline_value_usd": match["position_value_usd"],
+    })
+
+
 @app.route("/api/health")
 def health():
     return jsonify({"ok": True, "rpc_configured": bool(ALCHEMY_BASE)})
