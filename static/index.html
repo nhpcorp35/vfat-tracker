@@ -66,6 +66,7 @@
   .pnl-pos { color: var(--green); }
   .pnl-neg { color: var(--red); }
   .pnl-sub { font-family: var(--mono); font-size: 12px; margin-top: 2px; }
+  .pnl-sub.dim { color: var(--muted); }
   a { color: var(--blue); }
   .pos-history-toggle { cursor: pointer; color: var(--blue); font-size: 12px; margin-top: 14px; user-select: none; }
   .pos-history-panel { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
@@ -212,7 +213,9 @@ function renderPositions(positions) {
     const usdValue = fmtUsd(p.position_value_usd);
     const feesUsd = fmtUsd(p.uncollected_fees_usd);
     const pnl = fmtPnl(p.pnl_usd, p.pnl_pct);
-    const pnlLine = pnl ? `<div class="pnl-sub ${pnl.cls}">${pnl.text}</div>` : '';
+    const pnlLine = pnl
+      ? `<div class="pnl-sub ${pnl.cls}">${pnl.text}</div>`
+      : `<div class="pnl-sub dim">P&L collecting baseline…</div>`;
     const aprLine = (p.apr_pct === null || p.apr_pct === undefined) ? '—' : fmtPct(p.apr_pct, 1);
     const estAprLine = (p.estimated_apr_pct === null || p.estimated_apr_pct === undefined) ? '—' : fmtPct(p.estimated_apr_pct, 1);
     const rewardsRow = p.is_staked
