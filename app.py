@@ -637,6 +637,24 @@ def api_positions():
     return jsonify({**result, "cached": False})
 
 
+@app.route("/api/debug/baseline/<path:pos_key>")
+def api_debug_baseline(pos_key):
+    """Read-only diagnostic — returns the stored baseline entry and
+    recorded history for one position, so a suspicious P&L number can
+    be checked against real stored data instead of guessed at. Already
+    behind the same Basic Auth as everything else."""
+    known = _read_json_locked(_known_positions_file_path(), {})
+    entry = known.get(pos_key)
+    history = load_history(f"pos_{pos_key}")
+    return jsonify({
+        "key": pos_key,
+        "entry": entry,
+        "history_count": len(history),
+        "history_first_5": history[:5],
+        "history_last_5": history[-5:],
+    })
+
+
 @app.route("/api/health")
 def health():
     return jsonify({"ok": True, "rpc_configured": bool(ALCHEMY_BASE)})
