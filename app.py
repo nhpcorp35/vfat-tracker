@@ -130,25 +130,44 @@ def get_token_prices_usd(addresses: list, gecko_network: str = "base") -> dict:
 _GECKOTERMINAL_OHLCV_URL = "https://api.geckoterminal.com/api/v2/networks/{}/pools/{}/ohlcv/day"
 _POOL_VOLUME_CACHE = {}
 _POOL_VOLUME_CACHE_TTL = 1800
+_POOL_VOLUME_FAILURE_COOLDOWN = 600
 _VOLUME_RANGE_DAYS = {"7d": 7, "30d": 30, "60d": 60, "90d": 90, "180d": 180}
 
 
 def get_pool_volume_usd(pool_address: str, days: int, gecko_network: str = "base") -> list:
+    """Real bug fixed here: this used to cache successes only. On a 429
+    or timeout, nothing was cached, so the very next request (often
+    seconds later) hit the exact same doomed call again — and given how
+    constantly GeckoTerminal's free tier was rate-limiting by this
+    point (confirmed directly: the same 2-3 pools failing on nearly
+    every single cycle in the logs), that meant almost every position
+    load was burning up to the full timeout on a call virtually
+    guaranteed to fail again immediately. Failures are now cached too,
+    with their own shorter cooldown, so a rate-limited pool goes quiet
+    for a while instead of being retried on every request."""
     cache_key = f"{gecko_network}:{pool_address.lower()}:{days}"
     cached = _POOL_VOLUME_CACHE.get(cache_key)
-    if cached and time.time() - cached["fetched_at"] < _POOL_VOLUME_CACHE_TTL:
-        return cached["candles"]
-    url = _GECKOTERMINAL_OHLCV_URL.format(gecko_network, pool_address)
-    resp = requests.get(url, params={"aggregate": 1, "limit": days, "currency": "usd"}, timeout=10)
-    resp.raise_for_status()
-    data = resp.json()
-    ohlcv_list = data.get("data", {}).get("attributes", {}).get("ohlcv_list", [])
-    candles = sorted(
-        ({"ts": row[0], "volume_usd": row[5]} for row in ohlcv_list),
-        key=lambda c: c["ts"],
-    )
-    _POOL_VOLUME_CACHE[cache_key] = {"candles": candles, "fetched_at": time.time()}
-    return candles
+    if cached:
+        ttl = _POOL_VOLUME_FAILURE_COOLDOWN if cached.get("failed") else _POOL_VOLUME_CACHE_TTL
+        if time.time() - cached["fetched_at"] < ttl:
+            if cached.get("failed"):
+                raise RuntimeError(f"Pool volume fetch on cooldown after a recent failure ({pool_address})")
+            return cached["candles"]
+    try:
+        url = _GECKOTERMINAL_OHLCV_URL.format(gecko_network, pool_address)
+        resp = requests.get(url, params={"aggregate": 1, "limit": days, "currency": "usd"}, timeout=5)
+        resp.raise_for_status()
+        data = resp.json()
+        ohlcv_list = data.get("data", {}).get("attributes", {}).get("ohlcv_list", [])
+        candles = sorted(
+            ({"ts": row[0], "volume_usd": row[5]} for row in ohlcv_list),
+            key=lambda c: c["ts"],
+        )
+        _POOL_VOLUME_CACHE[cache_key] = {"candles": candles, "fetched_at": time.time()}
+        return candles
+    except Exception:
+        _POOL_VOLUME_CACHE[cache_key] = {"failed": True, "fetched_at": time.time()}
+        raise
 
 
 # ── History storage (portfolio-level and per-position) ─────────────────────
