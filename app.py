@@ -714,6 +714,86 @@ def api_debug_reset_baseline(pos_key):
     })
 
 
+@app.route("/api/debug/range-compare")
+def api_debug_range_compare():
+    """Read-only diagnostic — compares a matching-width concentrated
+    range across the user's current pool and named candidate pools,
+    using real on-chain state and the exact same verified liquidity
+    math (_amounts_for_liquidity, _tick_to_sqrt_price) the real position
+    fetchers use, not a re-derived approximation."""
+    import math
+    target_usd = float(request.args.get("target_usd", 243.0))
+    range_pct = float(request.args.get("range_pct", 0.101))
+    weth_dec, usdc_dec = 18, 6
+
+    candidates = [
+        ("Your current pool: Uniswap V3 0.30%", "0x6c561B446416E1A00E8E93E221854d6eA4171372", 0.003),
+        ("Uniswap V3 0.05%", "0xd0b53d9277642d899df5c87a3966a349a798f224", 0.0005),
+        ("Aerodrome Slipstream 0.05%", "0x3fe04a59ebd38cf06080a6f60a98d124eb59392a", 0.0005),
+    ]
+    min_pool_abi = va.UNISWAP_POOL_ABI + [{
+        "inputs": [], "name": "tickSpacing",
+        "outputs": [{"internalType": "int24", "name": "", "type": "int24"}],
+        "stateMutability": "view", "type": "function",
+    }]
+
+    w3 = get_w3("base")
+    if w3 is None:
+        return jsonify({"error": "Base RPC not configured"}), 500
+
+    results = []
+    for label, pool_address, fee_fraction in candidates:
+        try:
+            pool = w3.eth.contract(address=Web3.to_checksum_address(pool_address), abi=min_pool_abi)
+            slot0 = pool.functions.slot0().call()
+            sqrt_price_x96, current_tick = slot0[0], slot0[1]
+            active_liquidity = pool.functions.liquidity().call()
+            tick_spacing = pool.functions.tickSpacing().call()
+
+            sqrt_price = sqrt_price_x96 / (2 ** 96)
+            decimal_adjustment = 10 ** (weth_dec - usdc_dec)
+            weth_price_usd = (sqrt_price ** 2) * decimal_adjustment
+
+            price_lower_target = weth_price_usd * (1 - range_pct)
+            price_upper_target = weth_price_usd * (1 + range_pct)
+            raw_lower = price_lower_target / decimal_adjustment
+            raw_upper = price_upper_target / decimal_adjustment
+            tick_lower_raw = math.log(raw_lower) / math.log(1.0001)
+            tick_upper_raw = math.log(raw_upper) / math.log(1.0001)
+            tick_lower = int(round(tick_lower_raw / tick_spacing)) * tick_spacing
+            tick_upper = int(round(tick_upper_raw / tick_spacing)) * tick_spacing
+
+            sqrt_lower = va._tick_to_sqrt_price(tick_lower)
+            sqrt_upper = va._tick_to_sqrt_price(tick_upper)
+            amt0_per_l, amt1_per_l = va._amounts_for_liquidity(sqrt_price, sqrt_lower, sqrt_upper, 1)
+            usd_per_l = (amt0_per_l / (10 ** weth_dec)) * weth_price_usd + (amt1_per_l / (10 ** usdc_dec))
+            new_liquidity = target_usd / usd_per_l if usd_per_l > 0 else 0
+            share = new_liquidity / (active_liquidity + new_liquidity) if (active_liquidity + new_liquidity) > 0 else 0
+
+            try:
+                candles = get_pool_volume_usd(pool_address, 1, "base")
+                daily_volume_usd = candles[-1]["volume_usd"] if candles else None
+            except Exception:
+                daily_volume_usd = None
+
+            apr_pct = None
+            if daily_volume_usd is not None:
+                your_daily_fees_usd = daily_volume_usd * fee_fraction * share
+                apr_pct = (your_daily_fees_usd / target_usd) * 365 * 100
+
+            results.append({
+                "label": label, "pool_address": pool_address,
+                "weth_price_usd": weth_price_usd, "current_tick": current_tick,
+                "tick_spacing": tick_spacing, "computed_range": [tick_lower, tick_upper],
+                "active_liquidity": active_liquidity, "your_share_pct": share * 100,
+                "daily_volume_usd": daily_volume_usd, "resulting_apr_pct": apr_pct,
+            })
+        except Exception as e:
+            results.append({"label": label, "pool_address": pool_address, "error": str(e)})
+
+    return jsonify({"target_usd": target_usd, "range_pct": range_pct, "results": results})
+
+
 @app.route("/api/health")
 def health():
     return jsonify({"ok": True, "rpc_configured": bool(ALCHEMY_BASE)})
