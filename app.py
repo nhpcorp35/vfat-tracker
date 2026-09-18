@@ -714,6 +714,46 @@ def api_debug_reset_baseline(pos_key):
     })
 
 
+@app.route("/api/debug/volume-split-history")
+def api_debug_volume_split_history():
+    """Read-only diagnostic — daily volume for the 0.30% and 0.05%
+    Base WETH/USDC pools over N days, to check whether the volume
+    split between tiers is stable or swings meaningfully day to day
+    (a real hedge candidate) vs. moving together (not much of one)."""
+    days = int(request.args.get("days", 30))
+    pool_030 = "0x6c561B446416E1A00E8E93E221854d6eA4171372"
+    pool_005 = "0xd0b53d9277642d899df5c87a3966a349a798f224"
+
+    try:
+        candles_030 = get_pool_volume_usd(pool_030, days, "base")
+        candles_005 = get_pool_volume_usd(pool_005, days, "base")
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+    by_ts_030 = {c["ts"]: c["volume_usd"] for c in candles_030}
+    by_ts_005 = {c["ts"]: c["volume_usd"] for c in candles_005}
+    common_ts = sorted(set(by_ts_030) & set(by_ts_005))
+
+    rows = []
+    for ts in common_ts:
+        v030, v005 = by_ts_030[ts], by_ts_005[ts]
+        total = v030 + v005
+        rows.append({
+            "ts": ts, "vol_030": v030, "vol_005": v005,
+            "pct_005_of_combined": (v005 / total * 100) if total > 0 else None,
+        })
+
+    shares = [r["pct_005_of_combined"] for r in rows if r["pct_005_of_combined"] is not None]
+    summary = None
+    if shares:
+        summary = {
+            "days_compared": len(shares),
+            "min_pct_005": min(shares), "max_pct_005": max(shares),
+            "avg_pct_005": sum(shares) / len(shares),
+        }
+    return jsonify({"summary": summary, "rows": rows})
+
+
 @app.route("/api/debug/range-compare")
 def api_debug_range_compare():
     """Read-only diagnostic — compares a matching-width concentrated
