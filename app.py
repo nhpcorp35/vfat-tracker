@@ -727,11 +727,11 @@ def api_debug_range_compare():
     weth_dec, usdc_dec = 18, 6
 
     candidates = [
-        ("Your current pool: Uniswap V3 0.30%", "0x6c561B446416E1A00E8E93E221854d6eA4171372", 0.003),
-        ("Uniswap V3 0.05%", "0xd0b53d9277642d899df5c87a3966a349a798f224", 0.0005),
-        ("Aerodrome Slipstream 0.05%", "0x3fe04a59ebd38cf06080a6f60a98d124eb59392a", 0.0005),
+        ("Your current pool: Uniswap V3 0.30%", "0x6c561B446416E1A00E8E93E221854d6eA4171372", 0.003, va.UNISWAP_POOL_ABI),
+        ("Uniswap V3 0.05%", "0xd0b53d9277642d899df5c87a3966a349a798f224", 0.0005, va.UNISWAP_POOL_ABI),
+        ("Aerodrome Slipstream 0.05%", "0x3fe04a59ebd38cf06080a6f60a98d124eb59392a", 0.0005, va.AERODROME_POOL_ABI),
     ]
-    min_pool_abi = va.UNISWAP_POOL_ABI + [{
+    tick_spacing_ext = [{
         "inputs": [], "name": "tickSpacing",
         "outputs": [{"internalType": "int24", "name": "", "type": "int24"}],
         "stateMutability": "view", "type": "function",
@@ -742,9 +742,9 @@ def api_debug_range_compare():
         return jsonify({"error": "Base RPC not configured"}), 500
 
     results = []
-    for label, pool_address, fee_fraction in candidates:
+    for label, pool_address, fee_fraction, base_pool_abi in candidates:
         try:
-            pool = w3.eth.contract(address=Web3.to_checksum_address(pool_address), abi=min_pool_abi)
+            pool = w3.eth.contract(address=Web3.to_checksum_address(pool_address), abi=base_pool_abi + tick_spacing_ext)
             slot0 = pool.functions.slot0().call()
             sqrt_price_x96, current_tick = slot0[0], slot0[1]
             active_liquidity = pool.functions.liquidity().call()
