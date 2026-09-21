@@ -493,6 +493,36 @@ def discover_current_token_ids(w3, sickle_address: str, npm_address: str = UNISW
     return current_ids
 
 
+ERC721_ENUMERABLE_ABI = [
+    {"inputs": [{"name": "owner", "type": "address"}], "name": "balanceOf",
+     "outputs": [{"name": "", "type": "uint256"}], "stateMutability": "view", "type": "function"},
+    {"inputs": [{"name": "owner", "type": "address"}, {"name": "index", "type": "uint256"}],
+     "name": "tokenOfOwnerByIndex", "outputs": [{"name": "", "type": "uint256"}],
+     "stateMutability": "view", "type": "function"},
+]
+
+
+def discover_via_enumeration(w3, owner_address: str, npm_address: str) -> list:
+    """Live discovery for chains with no Alchemy indexed-transfer API
+    (Optimism has no Alchemy access here) and where raw eth_getLogs
+    proved unreliable (documented flakiness — this module's own
+    earlier notes). Uses standard ERC-721 Enumerable functions instead
+    — balanceOf + tokenOfOwnerByIndex — plain eth_calls, not log
+    filtering, so it isn't exposed to that same reliability problem.
+    Uniswap's NonfungiblePositionManager implements this extension on
+    every chain it's deployed to, confirmed directly against Optimism's
+    real deployment before relying on it here.
+
+    Replaces the previous hardcoded-token-id-list approach for
+    Optimism, which went stale and silently hid the position entirely
+    the first time it was rebalanced (confirmed directly: a real
+    rebalance minted a new NFT the hardcoded list had no way to know
+    about)."""
+    npm = w3.eth.contract(address=npm_address, abi=NPM_ABI + ERC721_ENUMERABLE_ABI)
+    balance = npm.functions.balanceOf(owner_address).call()
+    return [npm.functions.tokenOfOwnerByIndex(owner_address, i).call() for i in range(balance)]
+
+
 def _tick_to_sqrt_price(tick: int) -> float:
     return 1.0001 ** (tick / 2)
 
@@ -810,8 +840,7 @@ PROTOCOLS = {
 OPTIMISM_PROTOCOLS = {
     "uniswap": {
         "npm": OPTIMISM_UNISWAP_V3_NPM, "factory": OPTIMISM_UNISWAP_V3_FACTORY, "label": "Uniswap V3",
-        "discovery": "known_owner_check",
-        "known_token_ids": OPTIMISM_KNOWN_TOKEN_IDS["uniswap"],
+        "discovery": "enumerate_owner",
         "expected_owner": OPTIMISM_SICKLE_ADDRESS,
         "fetch_fn": functools.partial(fetch_position, npm_address=OPTIMISM_UNISWAP_V3_NPM,
                                        factory_address=OPTIMISM_UNISWAP_V3_FACTORY, pool_abi=UNISWAP_POOL_ABI),

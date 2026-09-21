@@ -273,6 +273,8 @@ def fetch_all_positions(wallet: str):
                 if sickle_address is None:
                     continue
                 token_ids = va.discover_current_token_ids(w3, sickle_address, cfg["npm"])
+            elif discovery == "enumerate_owner":
+                token_ids = va.discover_via_enumeration(w3, cfg["expected_owner"], cfg["npm"])
             elif discovery == "known_owner_check":
                 token_ids = va.check_known_token_ids(w3, cfg["expected_owner"], cfg["npm"], cfg["known_token_ids"])
             elif discovery == "known_exists_only":
