@@ -60,7 +60,7 @@ MAINNET_UNISWAP_V3_FACTORY = OPTIMISM_UNISWAP_V3_FACTORY
 # adding its tokenId here — there's no way to auto-discover it.
 OPTIMISM_SICKLE_ADDRESS = Web3.to_checksum_address("0x62aba0f25eb30993b577885b32c1b2a572000573")
 OPTIMISM_KNOWN_TOKEN_IDS = {
-    "uniswap": [1126993],
+    "uniswap": [1130651],
 }
 
 # Ethereum mainnet: same story as Optimism — no verified SickleFactory
