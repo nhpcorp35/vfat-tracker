@@ -166,7 +166,16 @@ function renderRangeBar(p) {
   `;
 }
 
-function renderPortfolio(portfolio, sickleAddresses, note) {
+function blendedApr(positions, key) {
+  let w = 0, sum = 0;
+  (positions || []).forEach(p => {
+    const v = p.position_value_usd, a = p[key];
+    if (v > 0 && a !== null && a !== undefined) { w += v; sum += v * a; }
+  });
+  return w > 0 ? sum / w : null;
+}
+
+function renderPortfolio(portfolio, sickleAddresses, note, positions) {
   const el = document.getElementById('portfolio');
   if (note) {
     el.innerHTML = `<div class="empty-state">${note}</div>`;
@@ -184,6 +193,11 @@ function renderPortfolio(portfolio, sickleAddresses, note) {
   const pnl = fmtPnl(portfolio.total_pnl_usd, null);
   const pnlBlock = pnl ? `<div class="portfolio-stat-value ${pnl.cls}">${pnl.text}</div>` : `<div class="portfolio-stat-value" style="color:var(--muted);">—</div>`;
 
+  const bTracked = blendedApr(positions, 'apr_pct');
+  const bEst = blendedApr(positions, 'estimated_apr_pct');
+  const aprBlock = `<div class="portfolio-stat-value">${bTracked === null ? '—' : fmtPct(bTracked, 1)}</div>`
+    + `<div style="font-size:11px; color:var(--muted); margin-top:4px;">est. ${bEst === null ? '—' : fmtPct(bEst, 1)}</div>`;
+
   const sickleLines = Object.entries(sickleAddresses || {})
     .filter(([, addr]) => addr)
     .map(([chain, addr]) => `<div>${chain}: ${addr.slice(0,6)}...${addr.slice(-4)}</div>`)
@@ -194,6 +208,7 @@ function renderPortfolio(portfolio, sickleAddresses, note) {
       <div><div class="portfolio-stat-label">Total Value</div><div class="portfolio-stat-value accent">${totalValue}</div></div>
       <div><div class="portfolio-stat-label">Uncollected Fees</div><div class="portfolio-stat-value">${totalFees}</div></div>
       <div><div class="portfolio-stat-label">P&L (since tracked)</div>${pnlBlock}</div>
+      <div><div class="portfolio-stat-label">Blended APR</div>${aprBlock}</div>
       <div><div class="portfolio-stat-label">Out of Range</div>${oorNote}</div>
       <div><div class="portfolio-stat-label">Sickles</div><div class="portfolio-stat-value" style="font-size:11px; line-height:1.6;">${sickleLines || '—'}</div></div>
     </div>
@@ -478,7 +493,7 @@ async function loadPositions(bust) {
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Request failed');
     showError(null);
-    renderPortfolio(data.portfolio, data.sickle_addresses, data.note);
+    renderPortfolio(data.portfolio, data.sickle_addresses, data.note, data.positions);
     renderPositions(data.positions || []);
     restoreOpenPositionHistories(data.positions || []);
   } catch (e) {
