@@ -430,12 +430,87 @@ def _append_closed_marker(key: str, ts: float):
     _write_json_locked(path, history)
 
 
+
+# ── LP vs Hold (Sickle-level; see vs_hold.py) ─────────────────────────────
+import vs_hold as vh
+
+VS_HOLD_START_TS = int(os.environ.get("VS_HOLD_START_TS", "1789171200"))  # 2026-09-12 00:00 UTC, same window as Snuggle
+_VS_HOLD_GECKO = {"base": "base", "optimism": "optimism", "mainnet": "eth"}
+
+
+def _vs_hold_file_path() -> str:
+    return os.path.join(HISTORY_DIR, "vs_hold.json")
+
+
+def _vs_hold_rpc(chain_key: str):
+    """Alchemy URL for the chain — needed for archive reads and
+    alchemy_getAssetTransfers (public Optimism RPCs support neither)."""
+    if not ALCHEMY_BASE or "base-mainnet" not in ALCHEMY_BASE:
+        return None
+    sub = {"base": "base-mainnet", "optimism": "opt-mainnet", "mainnet": "eth-mainnet"}[chain_key]
+    return ALCHEMY_BASE.replace("base-mainnet", sub)
+
+
+def compute_and_cache_vs_hold():
+    """Hourly. Per chain: (holdings now + withdrawn - deposited) -
+    holdings at VS_HOLD_START_TS, all at today's prices."""
+    from web3.middleware import geth_poa_middleware
+    wallet = Web3.to_checksum_address(DEFAULT_WALLET)
+    prior = _read_json_locked(_vs_hold_file_path(), {})
+    chains, total, capital = {}, 0.0, 0.0
+    for chain_key, cfg in va.CHAINS.items():
+        url = _vs_hold_rpc(chain_key)
+        if not url:
+            continue
+        try:
+            w3 = Web3(Web3.HTTPProvider(url))
+            w3.middleware_onion.inject(geth_poa_middleware, layer=0)
+            sickle = va.resolve_sickle(w3, wallet) if cfg["sickle_resolution"] == "dynamic" else cfg["fixed_sickle_address"]
+            if not sickle:
+                continue
+            start_block = (prior.get("chains", {}).get(chain_key) or {}).get("start_block") or vh.block_at(w3, VS_HOLD_START_TS)
+            r = vh.compute_chain(w3, url, chain_key, sickle, wallet, start_block)
+            toks = set(r["start"]) | set(r["now"]) | set(r["in"]) | set(r["out"])
+            meta = {t: va._token_meta(w3, t) for t in toks}
+            dec = {t: meta[t][1] for t in toks}
+            allowed = vh.allowed_tokens(toks, r["position_tokens"], {t: meta[t][0] for t in toks})
+            px = get_token_prices_usd(list(allowed), _VS_HOLD_GECKO[chain_key])
+            (vs, m1), (vn, m2), (vi, m3), (vo, m4) = (vh.value(r[k], px, dec, allowed) for k in ("start", "now", "in", "out"))
+            missing = sorted({meta[t][0] for t in m1 + m2 + m3 + m4})
+            if missing:
+                raise RuntimeError(f"missing prices for {missing}")
+            res = (vn + vo - vi) - vs
+            chains[chain_key] = {"start_block": start_block, "vs_hold_usd": res, "start_usd": vs, "now_usd": vn,
+                                 "deposited_usd": vi, "withdrawn_usd": vo,
+                                 "positions_start": r["positions_start"], "positions_now": r["positions_now"]}
+            total += res
+            capital += vs + vi
+        except Exception as e:
+            app.logger.warning("vs-hold %s failed: %s", chain_key, e)
+            chains[chain_key] = {"error": str(e)[:200],
+                                 "start_block": (prior.get("chains", {}).get(chain_key) or {}).get("start_block")}
+    ok = [c for c in chains.values() if "vs_hold_usd" in c]
+    out = {
+        "computed_at": time.time(), "start_ts": VS_HOLD_START_TS, "chains": chains,
+        # Only report a total when every chain computed — a partial total would mislead
+        "total_vs_hold_usd": total if ok and len(ok) == len(chains) else None,
+        "total_vs_hold_pct": (total / capital * 100.0) if ok and len(ok) == len(chains) and capital > 0 else None,
+    }
+    _write_json_locked(_vs_hold_file_path(), out)
+    app.logger.info("vs-hold computed: total=%s chains=%s", out["total_vs_hold_usd"],
+                    {k: round(v.get("vs_hold_usd", 0), 2) for k, v in chains.items()})
+
+
 def _snapshot_loop():
     while True:
         try:
             capture_snapshot()
         except Exception as e:
             app.logger.error("Snapshot loop error: %s", e)
+        try:
+            compute_and_cache_vs_hold()
+        except Exception as e:
+            app.logger.error("vs-hold error: %s", e)
         time.sleep(SNAPSHOT_INTERVAL)
 
 
@@ -647,6 +722,11 @@ def api_positions():
         return jsonify({"error": str(e)}), 500
 
     portfolio = compute_portfolio_summary(positions)
+    vsh = _read_json_locked(_vs_hold_file_path(), {})
+    portfolio["total_vs_hold_usd"] = vsh.get("total_vs_hold_usd")
+    portfolio["total_vs_hold_pct"] = vsh.get("total_vs_hold_pct")
+    portfolio["vs_hold_start_ts"] = vsh.get("start_ts")
+    portfolio["vs_hold_computed_at"] = vsh.get("computed_at")
     result = {
         "sickle_addresses": sickle_addresses,
         "positions": positions,

@@ -195,6 +195,10 @@ function renderPortfolio(portfolio, sickleAddresses, note, positions) {
 
   const bTracked = blendedApr(positions, 'apr_pct');
   const bEst = blendedApr(positions, 'estimated_apr_pct');
+  const vh = fmtPnl(portfolio.total_vs_hold_usd, portfolio.total_vs_hold_pct);
+  const vsHoldBlock = vh
+    ? `<div class="portfolio-stat-value ${vh.cls}" title="Whole Sickle vs holding its Sep 12 tokens, all at today's prices; deposits/withdrawals netted out">${vh.text}</div>`
+    : `<div class="portfolio-stat-value" style="color:var(--muted)">calculating…</div>`;
   const aprBlock = `<div class="portfolio-stat-value">${bTracked === null ? '—' : fmtPct(bTracked, 1)}</div>`
     + `<div style="font-size:11px; color:var(--muted); margin-top:4px;">est. ${bEst === null ? '—' : fmtPct(bEst, 1)}</div>`;
 
@@ -208,6 +212,7 @@ function renderPortfolio(portfolio, sickleAddresses, note, positions) {
       <div><div class="portfolio-stat-label">Total Value</div><div class="portfolio-stat-value accent">${totalValue}</div></div>
       <div><div class="portfolio-stat-label">Uncollected Fees</div><div class="portfolio-stat-value">${totalFees}</div></div>
       <div><div class="portfolio-stat-label">P&L (since tracked)</div>${pnlBlock}</div>
+      <div><div class="portfolio-stat-label">LP vs Hold (since Sep 12)</div>${vsHoldBlock}</div>
       <div><div class="portfolio-stat-label">Blended APR</div>${aprBlock}</div>
       <div><div class="portfolio-stat-label">Out of Range</div>${oorNote}</div>
       <div><div class="portfolio-stat-label">Sickles</div><div class="portfolio-stat-value" style="font-size:11px; line-height:1.6;">${sickleLines || '—'}</div></div>
