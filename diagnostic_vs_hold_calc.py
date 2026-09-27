@@ -28,15 +28,16 @@ for chain in ("base", "optimism", "mainnet"):
         toks = set(r["start"]) | set(r["now"]) | set(r["in"]) | set(r["out"])
         meta = {t: va._token_meta(w3, t) for t in toks}
         dec = {t: meta[t][1] for t in toks}
-        px = prices(GECKO[chain], list(toks)) if toks else {}
+        allowed = vh.allowed_tokens(toks, r["position_tokens"], {t: meta[t][0] for t in toks})
+        px = prices(GECKO[chain], list(allowed)) if allowed else {}
         print(f"positions at start: {r['positions_start']}  now: {r['positions_now']}", flush=True)
-        for t in sorted(toks, key=lambda t: meta[t][0]):
+        for t in sorted(allowed, key=lambda t: meta[t][0]):
             f = lambda d: d.get(t, 0) / 10 ** dec[t]
             print(f"  {meta[t][0]:>6} price={px.get(t.lower())}  start={f(r['start']):.6f} now={f(r['now']):.6f} in={f(r['in']):.6f} out={f(r['out']):.6f}", flush=True)
-        vs, ms = vh.value(r["start"], px, dec)
-        vn, mn = vh.value(r["now"], px, dec)
-        vi, mi = vh.value(r["in"], px, dec)
-        vo, mo = vh.value(r["out"], px, dec)
+        vs, ms = vh.value(r["start"], px, dec, allowed)
+        vn, mn = vh.value(r["now"], px, dec, allowed)
+        vi, mi = vh.value(r["in"], px, dec, allowed)
+        vo, mo = vh.value(r["out"], px, dec, allowed)
         res = (vn + vo - vi) - vs
         grand += res
         print(f"  USD @ today's prices: start={vs:.2f} now={vn:.2f} in={vi:.2f} out={vo:.2f}  => vs hold {res:+.2f}", flush=True)

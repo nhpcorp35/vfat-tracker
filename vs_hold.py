@@ -152,25 +152,49 @@ def idle_balances(w3, chain_key, sickle, block, tokens):
     return out
 
 
-def flows(rpc_url, chain_key, frm, to, from_block):
-    """{token: raw} of all ERC20 + native transfers frm -> to since from_block."""
-    out, page = {}, None
+REAL_TOKENS = {"WETH", "ETH", "USDC", "USDC.E", "USDBC", "USDT", "DAI", "CBBTC", "WBTC", "AERO", "CAKE", "OP"}
+
+
+def _transfers(rpc_url, **kw):
+    """alchemy_getAssetTransfers incl. native ETH sent by contracts
+    ('internal' — how a Sickle pays out ETH); falls back to
+    external+erc20 on chains that don't support 'internal'."""
+    out, page = [], None
+    cats = ["external", "erc20", "internal"]
     while True:
-        params = {"fromBlock": hex(from_block), "toBlock": "latest", "fromAddress": frm, "toAddress": to,
-                  "category": ["external", "erc20"], "maxCount": "0x3e8"}
+        params = {"toBlock": "latest", "category": cats, "maxCount": "0x3e8", **kw}
         if page:
             params["pageKey"] = page
         r = requests.post(rpc_url, json={"jsonrpc": "2.0", "id": 1, "method": "alchemy_getAssetTransfers",
                                          "params": [params]}, timeout=30).json()
+        if "error" in r and "internal" in cats:
+            cats, page, out = ["external", "erc20"], None, []
+            continue
         if "error" in r:
             raise RuntimeError(r["error"])
-        for t in r["result"]["transfers"]:
-            addr = (t.get("rawContract") or {}).get("address") or WETH[chain_key]
-            raw = int((t.get("rawContract") or {}).get("value") or "0x0", 16)
-            _add(out, addr, raw)
+        out += r["result"]["transfers"]
         page = r["result"].get("pageKey")
         if not page:
             return out
+
+
+def wallet_flows(rpc_url, chain_key, wallet, sickle, from_block):
+    """(deposits, withdrawals) as {token: raw}. Uses every wallet transfer
+    inside a transaction that touches the Sickle, so money routed via a
+    vfat router or paid out as native ETH is caught, not just direct
+    wallet<->Sickle ERC20 transfers."""
+    fb = hex(from_block)
+    sickle_txs = {t["hash"] for t in _transfers(rpc_url, fromBlock=fb, fromAddress=sickle)}
+    sickle_txs |= {t["hash"] for t in _transfers(rpc_url, fromBlock=fb, toAddress=sickle)}
+    deposits, withdrawals = {}, {}
+    for direction, kw, bucket in (("in", {"fromAddress": wallet}, deposits), ("out", {"toAddress": wallet}, withdrawals)):
+        for t in _transfers(rpc_url, fromBlock=fb, **kw):
+            if t["hash"] not in sickle_txs:
+                continue
+            addr = (t.get("rawContract") or {}).get("address") or WETH[chain_key]
+            raw = int((t.get("rawContract") or {}).get("value") or "0x0", 16)
+            _add(bucket, addr, raw)
+    return deposits, withdrawals
 
 
 def block_at(w3, ts):
@@ -188,21 +212,29 @@ def compute_chain(w3, rpc_url, chain_key, sickle, wallet, start_block):
     """Raw token dicts for one chain; valuation happens in the caller."""
     start, tokens_s, found_s = holdings(w3, chain_key, sickle, start_block)
     now, tokens_n, found_n = holdings(w3, chain_key, sickle, "latest")
-    inflow = flows(rpc_url, chain_key, wallet, sickle, start_block)
-    outflow = flows(rpc_url, chain_key, sickle, wallet, start_block)
-    tokens = tokens_s | tokens_n | set(inflow) | set(outflow)
+    inflow, outflow = wallet_flows(rpc_url, chain_key, wallet, sickle, start_block)
+    position_tokens = {Web3.to_checksum_address(t) for t in tokens_s | tokens_n}
+    tokens = position_tokens | set(inflow) | set(outflow)
     for k, v in idle_balances(w3, chain_key, sickle, start_block, tokens).items():
         _add(start, k, v)
     for k, v in idle_balances(w3, chain_key, sickle, "latest", tokens).items():
         _add(now, k, v)
-    return {"start": start, "now": now, "in": inflow, "out": outflow,
+    return {"start": start, "now": now, "in": inflow, "out": outflow, "position_tokens": position_tokens,
             "positions_start": found_s, "positions_now": found_n, "start_block": start_block}
 
 
-def value(raw_by_token, prices, decimals):
+def allowed_tokens(tokens, position_tokens, symbols):
+    """Position tokens + known majors only — spam airdrops (dozens hit the
+    Sickle) must never be priced into the result."""
+    return {t for t in tokens if t in position_tokens or symbols.get(t, "").upper() in REAL_TOKENS}
+
+
+def value(raw_by_token, prices, decimals, allowed=None):
     """USD value of a {token: raw} dict; returns (usd, missing_price_tokens)."""
     total, missing = 0.0, []
     for t, raw in raw_by_token.items():
+        if allowed is not None and t not in allowed:
+            continue
         p = prices.get(t.lower())
         if p is None:
             missing.append(t)
