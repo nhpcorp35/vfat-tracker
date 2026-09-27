@@ -8,7 +8,7 @@ from web3 import Web3
 import vfat_adapter as va
 
 START_TS = int(os.environ.get("VS_START_TS", "1789171200"))  # 2026-09-12 00:00 UTC
-WALLET = Web3.to_checksum_address(os.environ.get("DEFAULT_WALLET", "0xc33Fc161686ED2B8649162Ff9BfC3ED3a7f24801"))
+WALLET = Web3.to_checksum_address(os.environ.get("DEFAULT_WALLET") or "0xc33Fc161686ED2B8649162Ff9BfC3ED3a7f24801")
 ALCHEMY_BASE = os.environ["ALCHEMY_BASE"]
 
 ENUM_ABI = [
